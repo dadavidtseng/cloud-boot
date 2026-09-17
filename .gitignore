@@ -1,0 +1,24 @@
+# Local workflow and code-intelligence state
+.spec-workflow/
+.serena/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage output
+.coverage
+coverage.xml
+htmlcov/

@@ -212,10 +212,12 @@ def _validate_payload_containment(
 ) -> list[ScenarioIssue]:
     root = scenario_directory.resolve()
     issues: list[ScenarioIssue] = []
+
     for field_name, payload in _payloads(scenario.seed):
         if payload.file is None:
             continue
         candidate = (root / payload.file).resolve(strict=False)
+
         if not candidate.is_relative_to(root):
             issues.append(
                 ScenarioIssue(
@@ -257,8 +259,10 @@ def _read_scenario(path: Path) -> str:
         ) from error
 
 
+# ----------------------------------------------------------------------------------------------------
 def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) -> LoadedScenario:
-    """Load, validate, and normalize one Milestone 0 scenario.
+    """
+    Load, validate, and normalize one Milestone 0 scenario.
 
     ``environ`` is accepted for forward compatibility, but Milestone 0 rejects
     every secret reference and therefore never reads secret values from it.

@@ -4,6 +4,7 @@
 
 """Validated scenario and boot-plan models."""
 
+# ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
 from enum import StrEnum
@@ -77,11 +78,30 @@ class ResourceSpec(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 def _validate_relative_file(value: str) -> str:
+    """
+    Validate that a payload path stays inside the scenario directory.
+
+    The path is checked as both a POSIX path and a Windows path, so a scenario is rejected if either
+    platform would read it as absolute or as escaping the directory. This is a text-only check.
+    Symlink are resolved later by `cloud_boot.scenario._validate_payload_containment`.
+
+    Args:
+        value: A file path from the scenario, relative to the scenario file's directory.
+
+    Returns:
+        The unchanged `value` when it is a safe relative path.
+
+    Raises:
+        ValueError: If `value` is empty, contains a NUL byte, is absolute, or contains a `..`
+        component.
+    """
+    # NUL bytes truncate paths at the OS level and make open() raise.
     if "\x00" in value:
         raise ValueError("file path must not contain a NUL byte")
     if not value:
         raise ValueError("file path must not be empty")
 
+    # Parse both ways: "C:\x" is relative in POSIX, and "..\x" only shows ".." in Windows.
     posix_path = PurePosixPath(value)
     windows_path = PureWindowsPath(value)
 

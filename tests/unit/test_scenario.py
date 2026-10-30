@@ -1,5 +1,12 @@
-"""Tests for strict Milestone 0 scenario loading."""
+# ----------------------------------------------------------------------------------------------------
+# test_scenario.py
+# ----------------------------------------------------------------------------------------------------
 
+"""
+Tests for strict Milestone 0 scenario loading.
+"""
+
+# ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,6 +26,7 @@ from cloud_boot.scenario import (
     load_scenario,
 )
 
+# ----------------------------------------------------------------------------------------------------
 VALID_SCENARIO = """\
 scenario_version: 1
 name: basic-boot
@@ -75,9 +83,7 @@ def test_loads_and_normalizes_valid_single_boot(tmp_path: Path) -> None:
 
 def test_accepts_scenario_relative_payload_file(tmp_path: Path) -> None:
     (tmp_path / "payloads").mkdir()
-    (tmp_path / "payloads" / "user-data.yaml").write_text(
-        "#cloud-config\n{}\n", encoding="utf-8"
-    )
+    (tmp_path / "payloads" / "user-data.yaml").write_text("#cloud-config\n{}\n", encoding="utf-8")
     source = write_scenario(
         tmp_path,
         """\
@@ -126,9 +132,7 @@ seed:
         ("network_mode: restricted\n", "$.network_mode"),
     ],
 )
-def test_reports_invalid_field_location(
-    tmp_path: Path, fragment: str, location: str
-) -> None:
+def test_reports_invalid_field_location(tmp_path: Path, fragment: str, location: str) -> None:
     source = write_scenario(tmp_path, VALID_SCENARIO + fragment)
 
     with pytest.raises(ScenarioValidationError) as raised:
@@ -162,9 +166,7 @@ def test_rejects_malformed_yaml_with_source_location(tmp_path: Path) -> None:
 def test_rejects_non_mapping_document(tmp_path: Path) -> None:
     source = write_scenario(tmp_path, "- scenario_version\n- 1\n")
 
-    with pytest.raises(
-        ScenarioValidationError, match="document root must be a mapping"
-    ):
+    with pytest.raises(ScenarioValidationError, match="document root must be a mapping"):
         load_scenario(source)
 
 
@@ -232,9 +234,7 @@ def test_rejects_secret_reference_without_reading_environment(tmp_path: Path) ->
     assert "not supported in Milestone 0" in str(raised.value)
 
 
-@pytest.mark.parametrize(
-    "file_path", ["../user-data", "/tmp/user-data", "C:\\user-data"]
-)
+@pytest.mark.parametrize("file_path", ["../user-data", "/tmp/user-data", "C:\\user-data"])
 def test_rejects_payload_path_traversal(tmp_path: Path, file_path: str) -> None:
     source = write_scenario(
         tmp_path,
@@ -336,9 +336,7 @@ def test_rejects_duplicate_assertion_ids(tmp_path: Path) -> None:
 
 
 def test_rejects_relative_guest_file_path(tmp_path: Path) -> None:
-    source = write_scenario(
-        tmp_path, VALID_SCENARIO.replace("/var/tmp/boot-marker", "boot-marker")
-    )
+    source = write_scenario(tmp_path, VALID_SCENARIO.replace("/var/tmp/boot-marker", "boot-marker"))
 
     with pytest.raises(ScenarioValidationError) as raised:
         load_scenario(source)

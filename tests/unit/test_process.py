@@ -1,0 +1,416 @@
+"""Unit tests for the bounded host process boundary."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import os
+import sys
+import threading
+import time
+from collections.abc import Mapping
+from pathlib import Path
+
+import pytest
+
+from cloud_boot.errors import (
+    CloudBootError,
+    ExitCode,
+    ProcessExecutionError,
+    ProcessStartError,
+    ProcessTimeoutError,
+)
+from cloud_boot.process import (
+    CommandRunner,
+    CommandSpec,
+    ManagedProcess,
+    MemorySink,
+    OutputSinks,
+    deadline_after,
+)
+
+PYTHON = sys.executable
+
+
+def python_spec(
+    *code: str,
+    cwd: Path | str | None = None,
+    env: Mapping[str, str] | None = None,
+    env_allowlist: frozenset[str] | None = None,
+) -> CommandSpec:
+    if env_allowlist is None:
+        return CommandSpec((PYTHON, "-c", " ".join(code)), cwd=cwd, env=env)
+    return CommandSpec(
+        (PYTHON, "-c", " ".join(code)),
+        cwd=cwd,
+        env=env,
+        env_allowlist=env_allowlist,
+    )
+
+
+class _FakeProcess:
+    def __init__(self, *, exits_after_kill: bool) -> None:
+        self.pid = 999_999_999
+        self.stdin = None
+        self.stdout = io.BytesIO(b"partial stdout")
+        self.stderr = io.BytesIO(b"partial stderr")
+        self.exits_after_kill = exits_after_kill
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        if self.killed and self.exits_after_kill:
+            return -9
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_runs_without_shell_and_captures_both_streams() -> None:
+    result = CommandRunner().run(
+        python_spec("import sys; print('out'); print('err', file=sys.stderr)"),
+    )
+
+    assert result.succeeded
+    assert result.stdout == b"out\n"
+    assert result.stderr == b"err\n"
+    assert result.returncode == 0
+    assert result.duration_seconds >= 0
+
+
+def test_streams_are_forwarded_to_injected_sinks() -> None:
+    stdout = MemorySink()
+    stderr = MemorySink()
+    result = CommandRunner().run(
+        python_spec("import sys; sys.stdout.write('a'); sys.stderr.write('b')"),
+        sinks=OutputSinks(stdout=stdout, stderr=stderr),
+    )
+
+    assert result.stdout == b"a"
+    assert result.stderr == b"b"
+    assert stdout.getvalue() == b"a"
+    assert stderr.getvalue() == b"b"
+
+
+def test_stdin_is_written_without_shell_interpolation() -> None:
+    with_input = CommandRunner().run(
+        CommandSpec(
+            (PYTHON, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"),
+            stdin=b"$HOME;\n",
+        ),
+        timeout=5,
+    )
+    assert with_input.stdout == b"$HOME;\n"
+
+
+def test_start_does_not_block_on_large_stdin() -> None:
+    started: list[ManagedProcess] = []
+    errors: list[BaseException] = []
+
+    def start_process() -> None:
+        try:
+            started.append(
+                CommandRunner().start(
+                    CommandSpec(
+                        (PYTHON, "-c", "import time; time.sleep(5)"),
+                        stdin=b"x" * (1024 * 1024),
+                    )
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=start_process, daemon=True)
+    thread.start()
+    thread.join(timeout=0.5)
+
+    assert not thread.is_alive(), "start() blocked while writing stdin"
+    assert not errors
+    process = started[0]
+    assert hasattr(process, "stop")
+    process.stop(timeout=1)
+
+
+def test_environment_is_allowlisted_and_explicit_values_override() -> None:
+    result = CommandRunner().run(
+        python_spec(
+            "import os; print(os.getenv('PATH', '')); "
+            "print(os.getenv('CLOUD_BOOT_TEST', 'missing'));",
+            env={"CLOUD_BOOT_TEST": "present"},
+            env_allowlist=frozenset({"PATH", "CLOUD_BOOT_TEST"}),
+        )
+    )
+
+    assert result.succeeded
+    assert result.stdout.splitlines()[-1] == b"present"
+
+
+def test_disallowed_environment_key_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not allowlisted"):
+        CommandSpec((PYTHON, "-c", "pass"), env={"SECRET": "nope"})
+
+
+def test_missing_command_has_typed_start_error() -> None:
+    with pytest.raises(ProcessStartError) as caught:
+        CommandRunner().run(CommandSpec(("definitely-not-a-cloud-boot-command",)), timeout=1)
+
+    assert caught.value.code == "process-start-failed"
+    assert caught.value.exit_code == ExitCode.HOST_UNAVAILABLE
+    assert "environment_keys" in caught.value.context
+
+
+def test_nonzero_status_is_a_result_until_checked() -> None:
+    result = CommandRunner().run(python_spec("raise SystemExit(7)"))
+
+    assert not result.succeeded
+    assert result.returncode == 7
+    with pytest.raises(ProcessExecutionError) as caught:
+        result.check_returncode(exit_code=ExitCode.VM)
+    assert caught.value.returncode == 7
+    assert caught.value.exit_code == ExitCode.VM
+
+
+def test_deadline_timeout_terminates_child() -> None:
+    started = time.monotonic()
+    with pytest.raises(ProcessTimeoutError) as caught:
+        CommandRunner(termination_grace_seconds=0.05).run(
+            python_spec("import time; time.sleep(30)"),
+            timeout=0.1,
+        )
+
+    assert caught.value.exit_code == ExitCode.TIMEOUT
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group signaling is POSIX-specific")
+def test_termination_reaches_child_process_group() -> None:
+    child = (
+        "import subprocess,sys; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "print(p.pid, flush=True)"
+    )
+    process = CommandRunner(termination_grace_seconds=0.05).start(CommandSpec((PYTHON, "-c", child)))
+    deadline = deadline_after(2)
+    while not process._stdout.getvalue():
+        if time.monotonic() >= deadline:
+            process.kill()
+            pytest.fail("child process did not announce its PID")
+        time.sleep(0.01)
+    grandchild_pid = int(process._stdout.getvalue().splitlines()[0])
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            process.kill()
+            pytest.fail("group leader did not exit")
+        time.sleep(0.01)
+
+    try:
+        process.stop(timeout=0.5)
+        deadline = deadline_after(2)
+        while True:
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail("grandchild survived process-group termination")
+            time.sleep(0.01)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(grandchild_pid, 9)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group signaling is POSIX-specific")
+def test_normal_exit_cleans_inherited_pipes_and_stdin() -> None:
+    child = (
+        "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])"
+    )
+    process = CommandRunner().start(CommandSpec((PYTHON, "-c", child), stdin=b"x" * (1024 * 1024)))
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def wait_process() -> None:
+        try:
+            results.append(process.wait(timeout=1))
+        except BaseException as exc:
+            errors.append(exc)
+
+    waiter = threading.Thread(target=wait_process, daemon=True)
+    started = time.monotonic()
+    waiter.start()
+    waiter.join(timeout=1)
+    if waiter.is_alive():
+        process.kill()
+        waiter.join(timeout=1)
+
+    assert not waiter.is_alive(), "wait() blocked on inherited stdin or output pipes"
+    assert not errors
+    assert results
+    assert time.monotonic() - started < 1.5
+
+
+def test_timeout_allows_sigterm_handler_and_preserves_output() -> None:
+    child = (
+        "import signal,sys,time; "
+        "exec(\"def handle(*_):\\n print('term', flush=True)\\n raise SystemExit(0)\"); "
+        "signal.signal(signal.SIGTERM, handle); time.sleep(30)"
+    )
+    with pytest.raises(ProcessTimeoutError) as caught:
+        CommandRunner(termination_grace_seconds=0.1).run(
+            CommandSpec((PYTHON, "-c", child)),
+            timeout=0.3,
+        )
+
+    assert caught.value.result is not None
+    assert caught.value.result.timed_out
+    assert b"term" in caught.value.result.stdout
+
+
+def test_start_is_nonblocking() -> None:
+    process = CommandRunner().start(python_spec("import time; time.sleep(.1)"))
+    result = process.wait(timeout=5)
+    assert result.succeeded
+
+
+def test_timeout_budget_does_not_cut_short_command() -> None:
+    started = time.monotonic()
+    result = CommandRunner().run(
+        python_spec("import time; time.sleep(1.25)"),
+        timeout=5,
+    )
+
+    assert result.succeeded
+    assert time.monotonic() - started >= 1.0
+
+
+def test_stop_respects_hard_deadline_with_injected_clock() -> None:
+    fake = _FakeProcess(exits_after_kill=False)
+    current = 0.0
+
+    def clock() -> float:
+        return current
+
+    def sleeper(duration: float) -> None:
+        nonlocal current
+        current += duration
+
+    runner = CommandRunner(
+        clock=clock,
+        sleeper=sleeper,
+        popen_factory=lambda *_args, **_kwargs: fake,
+        termination_grace_seconds=0.01,
+    )
+    process = runner.start(CommandSpec(("fake-command",)))
+
+    with pytest.raises(ProcessTimeoutError):
+        process.stop(deadline=0.1)
+
+    assert current <= 0.1
+    assert fake.terminated
+    assert fake.killed
+
+
+def test_stop_default_uses_injected_termination_grace() -> None:
+    fake = _FakeProcess(exits_after_kill=False)
+    current = 0.0
+
+    def clock() -> float:
+        return current
+
+    def sleeper(duration: float) -> None:
+        nonlocal current
+        current += duration
+
+    runner = CommandRunner(
+        clock=clock,
+        sleeper=sleeper,
+        popen_factory=lambda *_args, **_kwargs: fake,
+        termination_grace_seconds=0.01,
+    )
+    process = runner.start(CommandSpec(("fake-command",)))
+
+    with pytest.raises(ProcessTimeoutError):
+        process.stop()
+
+    assert current <= 1.02
+
+
+def test_timeout_error_retains_timed_out_result() -> None:
+    fake = _FakeProcess(exits_after_kill=True)
+    current = 0.0
+
+    def clock() -> float:
+        return current
+
+    def sleeper(duration: float) -> None:
+        nonlocal current
+        current += duration
+
+    runner = CommandRunner(
+        clock=clock,
+        sleeper=sleeper,
+        popen_factory=lambda *_args, **_kwargs: fake,
+    )
+    process = runner.start(CommandSpec(("fake-command",)))
+    time.sleep(0.05)
+
+    with pytest.raises(ProcessTimeoutError) as caught:
+        process.wait(timeout=0.1)
+
+    assert caught.value.result is not None
+    assert caught.value.result.timed_out
+    assert caught.value.result.stdout == b"partial stdout"
+    assert caught.value.result.stderr == b"partial stderr"
+
+
+def test_callable_sinks_receive_output() -> None:
+    stdout: list[bytes] = []
+    stderr: list[bytes] = []
+    result = CommandRunner().run(
+        python_spec("import sys; sys.stdout.write('out'); sys.stderr.write('err')"),
+        sinks=OutputSinks(stdout=stdout.append, stderr=stderr.append),
+    )
+
+    assert result.stdout == b"out"
+    assert result.stderr == b"err"
+    assert b"out" in stdout
+    assert b"err" in stderr
+
+
+def test_non_allowlisted_host_environment_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLOUD_BOOT_DENIED", "secret")
+    result = CommandRunner().run(
+        python_spec(
+            "import os; print(os.getenv('CLOUD_BOOT_DENIED', 'missing'))",
+            env_allowlist=frozenset({"PATH"}),
+        )
+    )
+
+    assert result.stdout.strip() == b"missing"
+
+
+def test_command_spec_rejects_invalid_arguments() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        CommandSpec(())
+    with pytest.raises(ValueError, match="NUL"):
+        CommandSpec(("echo\x00",))
+
+
+def test_cloud_boot_error_rejects_unknown_phase() -> None:
+    with pytest.raises(ValueError, match="unknown error phase"):
+        CloudBootError("invalid", phase="not-a-phase")
+
+
+def test_deadline_helpers_reject_unbounded_values() -> None:
+    with pytest.raises(ValueError):
+        deadline_after(float("inf"))
+
+
+def test_command_spec_accepts_path_cwd(tmp_path: Path) -> None:
+    result = CommandRunner().run(
+        python_spec("import os; print(os.getcwd())", cwd=tmp_path),
+    )
+    assert Path(result.stdout.decode().strip()) == tmp_path

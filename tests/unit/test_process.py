@@ -355,7 +355,10 @@ def test_timeout_error_retains_timed_out_result() -> None:
         popen_factory=lambda *_args, **_kwargs: fake,
     )
     process = runner.start(CommandSpec(("fake-command",)))
-    time.sleep(0.05)
+    # The fake clock gives _finish no join time, so drain the readers before timing out.
+    for reader in process._threads:
+        reader.join(timeout=2)
+        assert not reader.is_alive()
 
     with pytest.raises(ProcessTimeoutError) as caught:
         process.wait(timeout=0.1)

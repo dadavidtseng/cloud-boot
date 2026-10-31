@@ -38,6 +38,7 @@ class ScenarioIssue:
 
     @property
     def field(self) -> str:
+        """Render the location as a rooted path such as $.assertions[1].path."""
         rendered = "$"
         for part in self.location:
             rendered += f"[{part}]" if isinstance(part, int) else f".{part}"

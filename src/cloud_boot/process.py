@@ -72,10 +72,12 @@ class MemorySink:
         self._lock = threading.Lock()
 
     def write(self, data: bytes) -> None:
+        """Append bytes under a lock so concurrent writers cannot interleave chunks."""
         with self._lock:
             self._buffer.extend(data)
 
     def getvalue(self) -> bytes:
+        """Return an immutable snapshot unaffected by later writes."""
         with self._lock:
             return bytes(self._buffer)
 

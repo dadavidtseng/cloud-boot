@@ -116,10 +116,12 @@ class PayloadSpec(StrictModel):
     @field_validator("file")
     @classmethod
     def validate_file(cls, value: str | None) -> str | None:
+        """Reject absolute or traversing file paths when a source is provided."""
         return None if value is None else _validate_relative_file(value)
 
     @model_validator(mode="after")
     def require_one_source(self) -> PayloadSpec:
+        """Raise ValueError unless exactly one payload source is provided."""
         if (self.inline is None) == (self.file is None):
             raise ValueError("exactly one of 'inline' or 'file' is required")
         return self
@@ -185,6 +187,7 @@ class FileAssertion(AssertionBase):
     @field_validator("path")
     @classmethod
     def validate_guest_path(cls, value: str) -> str:
+        """Require an absolute guest path without NUL bytes or parent traversal."""
         path = PurePosixPath(value)
 
         if "\x00" in value:
@@ -197,6 +200,7 @@ class FileAssertion(AssertionBase):
 
     @model_validator(mode="after")
     def validate_content_expectation(self) -> FileAssertion:
+        """Reject content matching when the file is expected to be absent."""
         if not self.exists and self.content_contains is not None:
             raise ValueError("content_contains cannot be used when exists is false")
         return self
@@ -262,6 +266,7 @@ class ScenarioV1(StrictModel):
 
     @model_validator(mode="after")
     def require_unique_assertion_ids(self) -> ScenarioV1:
+        """Reject assertion IDs that repeat within this scenario."""
         identifiers = [assertion.id for assertion in self.assertions]
 
         if len(identifiers) != len(set(identifiers)):

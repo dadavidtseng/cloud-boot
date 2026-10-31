@@ -1,10 +1,15 @@
+# ----------------------------------------------------------------------------------------------------
+# process.py
+# ----------------------------------------------------------------------------------------------------
+
 """Bounded, injectable host-process execution primitives.
 
-All external commands go through this module.  It intentionally exposes
-results rather than interpreting command-specific exit statuses; higher layers
-choose the appropriate cloud-boot phase and exit-code mapping.
+All external commands go through this module.  It intentionally exposes results rather than
+interpreting command-specific exit statuses; higher layers choose the appropriate cloud-boot phase and
+exit-code mapping.
 """
 
+# ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import contextlib
@@ -25,24 +30,11 @@ from .errors import (
     ProcessTimeoutError,
 )
 
-__all__ = [
-    "DEFAULT_ENV_ALLOWLIST",
-    "DEFAULT_TIMEOUT_SECONDS",
-    "CommandResult",
-    "CommandRunner",
-    "CommandSpec",
-    "ManagedProcess",
-    "MemorySink",
-    "OutputSink",
-    "OutputSinks",
-    "deadline_after",
-    "run",
-    "start",
-]
-
-
-DEFAULT_TIMEOUT_SECONDS = 300.0
-TERMINATION_GRACE_SECONDS = 2.0
+# ----------------------------------------------------------------------------------------------------
+DEFAULT_TIMEOUT_SECONDS = 300.0  # If timeout seconds is unset, the default timeout is 5 minutes
+TERMINATION_GRACE_SECONDS = (
+    2.0  # After sending SIGTERM, 2 seconds are given for the program to terminate
+)
 DEFAULT_ENV_ALLOWLIST = frozenset(
     {
         "HOME",
@@ -57,6 +49,7 @@ DEFAULT_ENV_ALLOWLIST = frozenset(
 )
 
 
+# ----------------------------------------------------------------------------------------------------
 class OutputSink(Protocol):
     """A destination for bytes read from a child stream."""
 
@@ -70,6 +63,7 @@ type Clock = Callable[[], float]
 type Sleeper = Callable[[float], None]
 
 
+# ----------------------------------------------------------------------------------------------------
 class MemorySink:
     """Thread-safe byte sink useful for callers and tests."""
 
@@ -86,6 +80,7 @@ class MemorySink:
             return bytes(self._buffer)
 
 
+# ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class OutputSinks:
     """Optional destinations receiving live stdout and stderr bytes."""
@@ -94,12 +89,39 @@ class OutputSinks:
     stderr: Sink = None
 
 
+# ----------------------------------------------------------------------------------------------------
+def _write_sink(sink: Sink, data: bytes) -> None:
+    """Forward one chunk of child output to a caller-provided sink.
+
+    A sink is either an object with a `write(byte)` method, such as an open file or
+    :class:`MemorySink`, or a plain callable, such as `list.append`. `None` disables forwarding, and
+    any other value is silently ignored. The value returned by the sink is discarded.
+
+    This runs on a stream reader thread. A sink shared by stdout and stderr receives writes from two
+    threads at once and must be thread-safe. Exceptions raised by the sink are not caught.
+
+    Args:
+        sink: Destination for the chunk, or `None` to drop it.
+        data: Bytes just read from the child's stdout or stderr.
+    """
+    if sink is None:
+        return
+    writer = getattr(sink, "write", None)
+
+    # Prefer write() so an object that is both writable and callable is treated as a stream.
+    if callable(writer):
+        writer(data)
+    elif callable(sink):
+        sink(data)
+
+
+# ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class CommandSpec:
     """Validated command input for :class:`CommandRunner`.
 
-    Environment values are merged over the host's allowlisted values.  A key
-    outside ``env_allowlist`` is rejected instead of silently inherited.
+    Environment values are merged over the host's allowlisted values.
+    A key outside `env_allowlist` is rejected instead of silently inherited.
     """
 
     argv: tuple[str, ...]
@@ -111,6 +133,7 @@ class CommandSpec:
 
     def __post_init__(self) -> None:
         args = tuple(self.argv)
+
         if not args:
             raise ValueError("argv must contain at least one argument")
         if any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in args):
@@ -121,23 +144,28 @@ class CommandSpec:
             object.__setattr__(self, "cwd", Path(self.cwd))
         if self.env is not None:
             environment = dict(self.env)
+
             if any(not isinstance(key, str) or not key or "=" in key for key in environment):
                 raise ValueError("environment names must be non-empty strings without '='")
             if any(not isinstance(value, str) or "\x00" in value for value in environment.values()):
                 raise ValueError("environment values must be strings without NUL bytes")
             object.__setattr__(self, "env", environment)
         allowlist = frozenset(self.env_allowlist)
+
         if any(not isinstance(key, str) or not key for key in allowlist):
             raise ValueError("environment allowlist names must be non-empty strings")
         if self.env is not None:
             denied = sorted(set(self.env) - allowlist)
+
             if denied:
                 raise ValueError(f"environment key is not allowlisted: {denied[0]}")
         object.__setattr__(self, "env_allowlist", allowlist)
+
         if self.stdin is not None and not isinstance(self.stdin, bytes):
             raise ValueError("stdin must be bytes when provided")
 
 
+# ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class CommandResult:
     """Observed result of a child process."""
@@ -167,6 +195,7 @@ class CommandResult:
             )
 
 
+# ----------------------------------------------------------------------------------------------------
 def deadline_after(seconds: float, *, clock: Clock = time.monotonic) -> float:
     """Return an absolute monotonic deadline after ``seconds``."""
 
@@ -175,16 +204,30 @@ def deadline_after(seconds: float, *, clock: Clock = time.monotonic) -> float:
     return clock() + seconds
 
 
-def _write_sink(sink: Sink, data: bytes) -> None:
-    if sink is None:
-        return
-    writer = getattr(sink, "write", None)
-    if callable(writer):
-        writer(data)
-    elif callable(sink):
-        sink(data)
+# ----------------------------------------------------------------------------------------------------
+def _resolve_deadline(
+    *,
+    timeout: float | None,
+    deadline: float | None,
+    clock: Clock,
+    default: float | None,
+) -> float:
+    if timeout is not None and deadline is not None:
+        raise ValueError("provide either timeout or deadline, not both")
+    if timeout is not None:
+        if timeout < 0 or not (timeout < float("inf")):
+            raise ValueError("timeout must be finite and non-negative")
+        return clock() + timeout
+    if deadline is not None:
+        if not (deadline < float("inf")):
+            raise ValueError("deadline must be finite")
+        return deadline
+    if default is None:
+        raise ValueError("a bounded timeout or deadline is required")
+    return clock() + default
 
 
+# ----------------------------------------------------------------------------------------------------
 class ManagedProcess:
     """A started process with bounded waiting and group termination."""
 
@@ -210,9 +253,9 @@ class ManagedProcess:
         self._stderr = MemorySink()
         self._threads: list[threading.Thread] = []
         self._stdin_thread: threading.Thread | None = None
-        self._start_reader(process.stdout, self._stdout, self._stdout_sink)
-        self._start_reader(process.stderr, self._stderr, self._stderr_sink)
-        self._start_stdin_writer()
+        self._start_reader(process.stdout, self._stdout, self._stdout_sink)  # thread 1, read stdout
+        self._start_reader(process.stderr, self._stderr, self._stderr_sink)  # thread 2, read stderr
+        self._start_stdin_writer()  # thread 3, write stdin
 
     @property
     def pid(self) -> int:
@@ -224,26 +267,6 @@ class ManagedProcess:
         """Return the current exit status without waiting."""
 
         return self._process.poll()
-
-    def _start_stdin_writer(self) -> None:
-        if self.spec.stdin is None:
-            return
-        stream = self._process.stdin
-        if stream is None:
-            return
-
-        def write_stdin() -> None:
-            try:
-                stream.write(self.spec.stdin or b"")
-            except (BrokenPipeError, OSError, ValueError):
-                pass
-            finally:
-                with contextlib.suppress(OSError, ValueError):
-                    stream.close()
-
-        thread = threading.Thread(target=write_stdin, name="cloud-boot-stdin", daemon=True)
-        thread.start()
-        self._stdin_thread = thread
 
     def _start_reader(
         self,
@@ -270,6 +293,26 @@ class ManagedProcess:
         thread = threading.Thread(target=read_stream, name="cloud-boot-output", daemon=True)
         thread.start()
         self._threads.append(thread)
+
+    def _start_stdin_writer(self) -> None:
+        if self.spec.stdin is None:
+            return
+        stream = self._process.stdin
+        if stream is None:
+            return
+
+        def write_stdin() -> None:
+            try:
+                stream.write(self.spec.stdin or b"")
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            finally:
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
+
+        thread = threading.Thread(target=write_stdin, name="cloud-boot-stdin", daemon=True)
+        thread.start()
+        self._stdin_thread = thread
 
     def _signal_group(self, sig: signal.Signals) -> None:
         try:
@@ -414,28 +457,7 @@ class ManagedProcess:
         return self._finish(returncode, join_deadline=cleanup_deadline)
 
 
-def _resolve_deadline(
-    *,
-    timeout: float | None,
-    deadline: float | None,
-    clock: Clock,
-    default: float | None,
-) -> float:
-    if timeout is not None and deadline is not None:
-        raise ValueError("provide either timeout or deadline, not both")
-    if timeout is not None:
-        if timeout < 0 or not (timeout < float("inf")):
-            raise ValueError("timeout must be finite and non-negative")
-        return clock() + timeout
-    if deadline is not None:
-        if not (deadline < float("inf")):
-            raise ValueError("deadline must be finite")
-        return deadline
-    if default is None:
-        raise ValueError("a bounded timeout or deadline is required")
-    return clock() + default
-
-
+# ----------------------------------------------------------------------------------------------------
 class CommandRunner:
     """Create and run commands with injectable time and process boundaries."""
 
@@ -510,6 +532,7 @@ class CommandRunner:
         return process.wait(timeout=timeout, deadline=deadline)
 
 
+# ----------------------------------------------------------------------------------------------------
 _DEFAULT_RUNNER = CommandRunner()
 
 
@@ -519,6 +542,7 @@ def start(spec: CommandSpec, sinks: OutputSinks | None = None) -> ManagedProcess
     return _DEFAULT_RUNNER.start(spec, sinks)
 
 
+# ----------------------------------------------------------------------------------------------------
 def run(
     spec: CommandSpec,
     *,
@@ -529,3 +553,20 @@ def run(
     """Run a command using the default runner."""
 
     return _DEFAULT_RUNNER.run(spec, timeout=timeout, deadline=deadline, sinks=sinks)
+
+
+# ----------------------------------------------------------------------------------------------------
+__all__ = [
+    "DEFAULT_ENV_ALLOWLIST",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "CommandResult",
+    "CommandRunner",
+    "CommandSpec",
+    "ManagedProcess",
+    "MemorySink",
+    "OutputSink",
+    "OutputSinks",
+    "deadline_after",
+    "run",
+    "start",
+]

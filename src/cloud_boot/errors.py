@@ -14,15 +14,6 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from .process import CommandResult
 
-__all__ = [
-    "CloudBootError",
-    "ErrorPhase",
-    "ExitCode",
-    "ProcessExecutionError",
-    "ProcessStartError",
-    "ProcessTimeoutError",
-]
-
 
 class ErrorPhase(StrEnum):
     """Stable high-level phases used in diagnostics and reports."""
@@ -132,6 +123,7 @@ class ProcessStartError(CloudBootError):
         )
 
 
+# ----------------------------------------------------------------------------------------------------
 class ProcessExecutionError(CloudBootError):
     """Raised when a caller explicitly requires a zero return code."""
 
@@ -155,6 +147,7 @@ class ProcessExecutionError(CloudBootError):
         self.returncode = returncode
 
 
+# ----------------------------------------------------------------------------------------------------
 class ProcessTimeoutError(CloudBootError):
     """Raised after a process deadline and bounded TERM/KILL cleanup."""
 
@@ -176,3 +169,14 @@ class ProcessTimeoutError(CloudBootError):
             exit_code=ExitCode.TIMEOUT,
         )
         self.result = result
+
+
+# ----------------------------------------------------------------------------------------------------
+__all__ = [
+    "CloudBootError",
+    "ErrorPhase",
+    "ExitCode",
+    "ProcessExecutionError",
+    "ProcessStartError",
+    "ProcessTimeoutError",
+]

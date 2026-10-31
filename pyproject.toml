@@ -38,6 +38,10 @@ dev = [
   "types-PyYAML>=6.0,<7",
 ]
 
+[project.urls]
+Repository = "https://github.com/dadavidtseng/cloud-boot"
+Issues = "https://github.com/dadavidtseng/cloud-boot/issues"
+
 [project.scripts]
 cloud-boot = "cloud_boot.cli:main"
 
@@ -62,6 +66,16 @@ warn_unreachable = true
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers", "-ra"]
 testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["cloud_boot"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_also = ['if (typing\.)?TYPE_CHECKING:']
 
 [tool.ruff]
 target-version = "py312"
@@ -71,9 +85,38 @@ src = ["src", "tests"]
 [tool.ruff.format]
 docstring-code-format = true
 line-ending = "lf"
+quote-style = "double"
 
 [tool.ruff.lint]
-select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+select = [
+  "B",     # flake8-bugbear: likely bugs
+  "C4",    # flake8-comprehensions
+  "D",     # pydocstyle
+  "E",     # pycodestyle errors
+  "F",     # Pyflakes
+  "G",     # Logging format correctness and lazy interpolation
+  "I",     # isort
+  "ISC",   # Implicit string concatenation, including missing commas
+  "PIE",   # Miscellaneous mistakes
+  "PT",    # pytest style
+  "RUF",   # Ruff-specific rules
+  "S506",  # Unsafe YAML loading
+  "S602",  # Subprocess calls with shell=True
+  "SIM",   # Simplification
+  "T10",   # Leftover debugger calls
+  "UP",    # Modern Python syntax
+  "W",     # pycodestyle warnings
+]
+ignore = [
+  "D105",  # Magic methods are documented by the language
+  "D107",  # Constructor arguments belong in the class docstring
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["cloud_boot"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]  # Test names describe the behavior under test

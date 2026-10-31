@@ -269,7 +269,8 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
     source_path = Path(path).expanduser().resolve()
     document = _read_scenario(source_path)
     try:
-        raw = yaml.load(document, Loader=_StrictSafeLoader)
+        # SafeLoader subclass adds duplicate-key checks and alias/depth limits.
+        raw = yaml.load(document, Loader=_StrictSafeLoader)  # noqa: S506
     except yaml.YAMLError as error:
         raise ScenarioValidationError([_yaml_issue(error)]) from error
 

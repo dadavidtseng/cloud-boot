@@ -405,7 +405,7 @@ def test_cloud_boot_error_rejects_unknown_phase() -> None:
 
 
 def test_deadline_helpers_reject_unbounded_values() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="deadline duration must be finite and non-negative"):
         deadline_after(float("inf"))
 
 

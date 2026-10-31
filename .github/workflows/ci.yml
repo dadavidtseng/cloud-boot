@@ -1,0 +1,45 @@
+# Fast checks that need no network, QEMU, or KVM. Task 28 extends this with
+# clean-wheel CLI checks, schema drift, and the separate KVM E2E workflow.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.13.6"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run --locked ruff check --output-format=github .
+
+      - name: Ruff format
+        run: uv run --locked ruff format --check .
+
+      - name: mypy
+        run: uv run --locked mypy
+
+      - name: pytest
+        run: uv run --locked pytest --cov --cov-report=term
+
+      - name: Build wheel and sdist
+        run: uv build

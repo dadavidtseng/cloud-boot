@@ -27,13 +27,14 @@ dependencies = [
   "PyYAML>=6.0,<7",
 ]
 
-[project.optional-dependencies]
+# Tools for developing this repository; not required to use cloud-boot.
+[dependency-groups]
 dev = [
   "build>=1.2,<2",
-  "mypy>=1.15,<2",
+  "mypy==1.20.2",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
-  "ruff>=0.11,<1",
+  "ruff==0.17.3",
   "types-PyYAML>=6.0,<7",
 ]
 

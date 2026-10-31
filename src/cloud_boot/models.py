@@ -43,8 +43,7 @@ type PositiveTimeout = Annotated[StrictInt, Field(ge=1, le=3600)]
 
 # -----------------------------------------------------------------------------
 class StrictModel(BaseModel):
-    """
-    Base model for user-controlled schema objects.
+    """Base model for user-controlled schema objects.
 
     All fields are immutable after construction, unknown fields are rejected,
     and default values are validated.
@@ -55,9 +54,7 @@ class StrictModel(BaseModel):
 
 # -----------------------------------------------------------------------------
 class ImageSpec(StrictModel):
-    """
-    Allowlisted Ubuntu image identity for Milestone 0.
-    """
+    """Allowlisted Ubuntu image identity for Milestone 0."""
 
     release: Literal["noble"] = "noble"
     architecture: Literal["amd64"] = "amd64"
@@ -67,9 +64,7 @@ class ImageSpec(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 class ResourceSpec(StrictModel):
-    """
-    Bounded virtual-machine resources.
-    """
+    """Bounded virtual-machine resources."""
 
     cpus: Annotated[StrictInt, Field(ge=1, le=16)] = 2
     memory_mib: Annotated[StrictInt, Field(ge=512, le=32768)] = 2048
@@ -78,8 +73,7 @@ class ResourceSpec(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 def _validate_relative_file(value: str) -> str:
-    """
-    Validate that a payload path stays inside the scenario directory.
+    """Validate that a payload path stays inside the scenario directory.
 
     The path is checked as both a POSIX path and a Windows path, so a scenario is rejected if either
     platform would read it as absolute or as escaping the directory. This is a text-only check.
@@ -114,9 +108,7 @@ def _validate_relative_file(value: str) -> str:
 
 # ----------------------------------------------------------------------------------------------------
 class PayloadSpec(StrictModel):
-    """
-    A UTF-8 payload supplied inline or from a scenario-relative file.
-    """
+    """A UTF-8 payload supplied inline or from a scenario-relative file."""
 
     inline: StrictStr | None = None
     file: StrictStr | None = None
@@ -135,9 +127,7 @@ class PayloadSpec(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 class SeedSpec(StrictModel):
-    """
-    Inputs used to construct normal NoCloud seed media.
-    """
+    """Inputs used to construct normal NoCloud seed media."""
 
     instance_id: Annotated[StrictStr, Field(min_length=1, max_length=128)]
     local_hostname: (
@@ -158,9 +148,7 @@ class SeedSpec(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 class CloudInitState(StrEnum):
-    """
-    Cloud-init terminal states needed by the scenario contract.
-    """
+    """Cloud-init terminal states needed by the scenario contract."""
 
     DONE = "done"
     DEGRADED = "degraded"
@@ -170,9 +158,7 @@ class CloudInitState(StrEnum):
 
 # ----------------------------------------------------------------------------------------------------
 class AssertionBase(StrictModel):
-    """
-    Fields common to every Milestone 0 assertion.
-    """
+    """Fields common to every Milestone 0 assertion."""
 
     id: Identifier
     required: StrictBool = True
@@ -181,9 +167,7 @@ class AssertionBase(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 class CloudInitStatusAssertion(AssertionBase):
-    """
-    Require a cloud-init terminal state.
-    """
+    """Require a cloud-init terminal state."""
 
     type: Literal["cloud-init-status"]
     expected: Literal["done"] = "done"
@@ -191,9 +175,7 @@ class CloudInitStatusAssertion(AssertionBase):
 
 # ----------------------------------------------------------------------------------------------------
 class FileAssertion(AssertionBase):
-    """
-    Require file existence and, optionally, matching content.
-    """
+    """Require file existence and, optionally, matching content."""
 
     type: Literal["file"]
     path: StrictStr
@@ -222,9 +204,7 @@ class FileAssertion(AssertionBase):
 
 # ----------------------------------------------------------------------------------------------------
 class PackageInstalledAssertion(AssertionBase):
-    """
-    Require an installed Debian package.
-    """
+    """Require an installed Debian package."""
 
     type: Literal["package-installed"]
     name: Annotated[
@@ -242,9 +222,7 @@ type AssertionSpec = Annotated[
 
 # ----------------------------------------------------------------------------------------------------
 class BootPlan(StrictModel):
-    """
-    Normalized internal plan for one VM boot.
-    """
+    """Normalized internal plan for one VM boot."""
 
     name: Identifier
     seed: SeedSpec
@@ -257,8 +235,7 @@ class BootPlan(StrictModel):
 
 # ----------------------------------------------------------------------------------------------------
 class ScenarioV1(StrictModel):
-    """
-    Defines the strict single-boot input schema for Milestone 0.
+    """Defines the strict single-boot input schema for Milestone 0.
 
     Attributes:
         scenario_version: Schema version. Must be 1.
@@ -292,10 +269,7 @@ class ScenarioV1(StrictModel):
         return self
 
     def to_boot_plan(self) -> BootPlan:
-        """
-        Normalize the single-boot shorthand for downstream components.
-        """
-
+        """Normalize the single-boot shorthand for downstream components."""
         return BootPlan(name="boot", seed=self.seed, assertions=self.assertions)
 
 

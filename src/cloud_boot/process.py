@@ -180,12 +180,10 @@ class CommandResult:
     @property
     def succeeded(self) -> bool:
         """Whether the child exited normally with status zero."""
-
         return self.returncode == 0 and not self.timed_out
 
     def check_returncode(self, *, exit_code: int | ExitCode = ExitCode.INTERNAL) -> None:
         """Raise a typed error if the command did not succeed."""
-
         if not self.succeeded:
             raise ProcessExecutionError(
                 "command exited unsuccessfully",
@@ -198,7 +196,6 @@ class CommandResult:
 # ----------------------------------------------------------------------------------------------------
 def deadline_after(seconds: float, *, clock: Clock = time.monotonic) -> float:
     """Return an absolute monotonic deadline after ``seconds``."""
-
     if seconds < 0 or not (seconds < float("inf")):
         raise ValueError("deadline duration must be finite and non-negative")
     return clock() + seconds
@@ -260,12 +257,10 @@ class ManagedProcess:
     @property
     def pid(self) -> int:
         """Return the child PID."""
-
         return self._process.pid
 
     def poll(self) -> int | None:
         """Return the current exit status without waiting."""
-
         return self._process.poll()
 
     def _start_reader(
@@ -334,12 +329,10 @@ class ManagedProcess:
 
     def terminate(self) -> None:
         """Request graceful process-group termination."""
-
         self._signal_group(signal.SIGTERM)
 
     def kill(self) -> None:
         """Force process-group termination."""
-
         self._signal_group(cast(signal.Signals, getattr(signal, "SIGKILL", signal.SIGTERM)))
 
     def _all_threads(self) -> list[threading.Thread]:
@@ -399,7 +392,6 @@ class ManagedProcess:
 
     def stop(self, *, timeout: float | None = None, deadline: float | None = None) -> CommandResult:
         """Stop gracefully, then forcefully, within a hard deadline."""
-
         absolute = _resolve_deadline(
             timeout=timeout,
             deadline=deadline,
@@ -429,7 +421,6 @@ class ManagedProcess:
 
     def wait(self, *, timeout: float | None = None, deadline: float | None = None) -> CommandResult:
         """Wait for completion; an explicit deadline is a hard cleanup boundary."""
-
         absolute = _resolve_deadline(
             timeout=timeout,
             deadline=deadline,
@@ -486,7 +477,6 @@ class CommandRunner:
 
     def start(self, spec: CommandSpec, sinks: OutputSinks | None = None) -> ManagedProcess:
         """Start one command without waiting for it."""
-
         try:
             process = self._popen_factory(
                 list(spec.argv),
@@ -525,7 +515,6 @@ class CommandRunner:
         sinks: OutputSinks | None = None,
     ) -> CommandResult:
         """Start and wait for one command within a bounded deadline."""
-
         process = self.start(spec, sinks)
         if timeout is None and deadline is None:
             timeout = self._default_timeout_seconds
@@ -538,7 +527,6 @@ _DEFAULT_RUNNER = CommandRunner()
 
 def start(spec: CommandSpec, sinks: OutputSinks | None = None) -> ManagedProcess:
     """Start a command using the default runner."""
-
     return _DEFAULT_RUNNER.start(spec, sinks)
 
 
@@ -551,7 +539,6 @@ def run(
     sinks: OutputSinks | None = None,
 ) -> CommandResult:
     """Run a command using the default runner."""
-
     return _DEFAULT_RUNNER.run(spec, timeout=timeout, deadline=deadline, sinks=sinks)
 
 

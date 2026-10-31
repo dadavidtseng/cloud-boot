@@ -2,9 +2,7 @@
 # scenario.py
 # ----------------------------------------------------------------------------------------------------
 
-"""
-Safe loading and normalization of cloud-boot scenarios.
-"""
+"""Safe loading and normalization of cloud-boot scenarios."""
 
 from __future__ import annotations
 
@@ -261,13 +259,11 @@ def _read_scenario(path: Path) -> str:
 
 # ----------------------------------------------------------------------------------------------------
 def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) -> LoadedScenario:
-    """
-    Load, validate, and normalize one Milestone 0 scenario.
+    """Load, validate, and normalize one Milestone 0 scenario.
 
     ``environ`` is accepted for forward compatibility, but Milestone 0 rejects
     every secret reference and therefore never reads secret values from it.
     """
-
     del environ
     source_path = Path(path).expanduser().resolve()
     document = _read_scenario(source_path)

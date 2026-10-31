@@ -89,7 +89,6 @@ class CloudBootError(Exception):
 
     def as_dict(self) -> dict[str, object]:
         """Return the stable shape used by reports and CLI adapters."""
-
         result: dict[str, object] = {
             "code": self.code,
             "phase": self.phase,

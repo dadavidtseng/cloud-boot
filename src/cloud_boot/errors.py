@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import IntEnum, StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .process import CommandResult
@@ -45,9 +45,6 @@ class ExitCode(IntEnum):
     SIGHUP = 129
     SIGINT = 130
     SIGTERM = 143
-
-
-Context: Final = Mapping[str, object]
 
 
 class CloudBootError(Exception):

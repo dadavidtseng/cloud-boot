@@ -77,7 +77,7 @@ def _validate_relative_file(value: str) -> str:
 
     The path is checked as both a POSIX path and a Windows path, so a scenario is rejected if either
     platform would read it as absolute or as escaping the directory. This is a text-only check.
-    Symlink are resolved later by `cloud_boot.scenario._validate_payload_containment`.
+    Symlinks are resolved later by `cloud_boot.scenario._validate_payload_containment`.
 
     Args:
         value: A file path from the scenario, relative to the scenario file's directory.

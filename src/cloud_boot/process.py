@@ -31,6 +31,23 @@ from .errors import (
 )
 
 # ----------------------------------------------------------------------------------------------------
+__all__ = [
+    "DEFAULT_ENV_ALLOWLIST",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "Clock",
+    "CommandResult",
+    "CommandRunner",
+    "CommandSpec",
+    "ManagedProcess",
+    "MemorySink",
+    "OutputSink",
+    "OutputSinks",
+    "deadline_after",
+    "run",
+    "start",
+]
+
+# ----------------------------------------------------------------------------------------------------
 DEFAULT_TIMEOUT_SECONDS = 300.0  # If timeout seconds is unset, the default timeout is 5 minutes
 TERMINATION_GRACE_SECONDS = (
     2.0  # After sending SIGTERM, 2 seconds are given for the program to terminate
@@ -542,20 +559,3 @@ def run(
 ) -> CommandResult:
     """Run a command using the default runner."""
     return _DEFAULT_RUNNER.run(spec, timeout=timeout, deadline=deadline, sinks=sinks)
-
-
-# ----------------------------------------------------------------------------------------------------
-__all__ = [
-    "DEFAULT_ENV_ALLOWLIST",
-    "DEFAULT_TIMEOUT_SECONDS",
-    "CommandResult",
-    "CommandRunner",
-    "CommandSpec",
-    "ManagedProcess",
-    "MemorySink",
-    "OutputSink",
-    "OutputSinks",
-    "deadline_after",
-    "run",
-    "start",
-]

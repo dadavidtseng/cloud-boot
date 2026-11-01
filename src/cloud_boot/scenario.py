@@ -21,6 +21,16 @@ from yaml.resolver import BaseResolver
 
 from cloud_boot.models import BootPlan, PayloadSpec, ScenarioV1, SeedSpec
 
+__all__ = [
+    "MAX_SCENARIO_BYTES",
+    "MAX_YAML_ALIASES",
+    "MAX_YAML_DEPTH",
+    "LoadedScenario",
+    "ScenarioIssue",
+    "ScenarioValidationError",
+    "load_scenario",
+]
+
 MAX_SCENARIO_BYTES = 1024 * 1024
 MAX_YAML_ALIASES = 50
 MAX_YAML_DEPTH = 64
@@ -306,14 +316,3 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
         scenario=scenario,
         boots=(scenario.to_boot_plan(),),
     )
-
-
-__all__ = [
-    "MAX_SCENARIO_BYTES",
-    "MAX_YAML_ALIASES",
-    "MAX_YAML_DEPTH",
-    "LoadedScenario",
-    "ScenarioIssue",
-    "ScenarioValidationError",
-    "load_scenario",
-]

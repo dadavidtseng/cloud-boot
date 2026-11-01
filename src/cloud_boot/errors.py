@@ -14,7 +14,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .process import CommandResult
 
+# ----------------------------------------------------------------------------------------------------
+__all__ = [
+    "CloudBootError",
+    "ErrorPhase",
+    "ExitCode",
+    "ProcessExecutionError",
+    "ProcessStartError",
+    "ProcessTimeoutError",
+]
 
+
+# ----------------------------------------------------------------------------------------------------
 class ErrorPhase(StrEnum):
     """Stable high-level phases used in diagnostics and reports."""
 
@@ -29,6 +40,7 @@ class ErrorPhase(StrEnum):
     INTERNAL = "internal"
 
 
+# ----------------------------------------------------------------------------------------------------
 class ExitCode(IntEnum):
     """Exit-code contract from the approved design."""
 
@@ -47,6 +59,7 @@ class ExitCode(IntEnum):
     SIGTERM = 143
 
 
+# ----------------------------------------------------------------------------------------------------
 class CloudBootError(Exception):
     """Base class for expected failures.
 
@@ -98,6 +111,7 @@ class CloudBootError(Exception):
         return result
 
 
+# ----------------------------------------------------------------------------------------------------
 class ProcessStartError(CloudBootError):
     """Raised when a child process cannot be created."""
 
@@ -165,14 +179,3 @@ class ProcessTimeoutError(CloudBootError):
             exit_code=ExitCode.TIMEOUT,
         )
         self.result = result
-
-
-# ----------------------------------------------------------------------------------------------------
-__all__ = [
-    "CloudBootError",
-    "ErrorPhase",
-    "ExitCode",
-    "ProcessExecutionError",
-    "ProcessStartError",
-    "ProcessTimeoutError",
-]

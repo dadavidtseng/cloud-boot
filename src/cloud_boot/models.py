@@ -30,6 +30,21 @@ from pydantic import (
     model_validator,
 )
 
+# ----------------------------------------------------------------------------------------------------
+__all__ = [
+    "AssertionSpec",
+    "BootPlan",
+    "CloudInitState",
+    "CloudInitStatusAssertion",
+    "FileAssertion",
+    "ImageSpec",
+    "PackageInstalledAssertion",
+    "PayloadSpec",
+    "ResourceSpec",
+    "ScenarioV1",
+    "SeedSpec",
+]
+
 # A strict string that must be 1-64 characters, start with a lowercase letter or digit,
 # and contain only lowercase letters, digits, dots, underscores, or hyphens.
 type Identifier = Annotated[
@@ -276,19 +291,3 @@ class ScenarioV1(StrictModel):
     def to_boot_plan(self) -> BootPlan:
         """Normalize the single-boot shorthand for downstream components."""
         return BootPlan(name="boot", seed=self.seed, assertions=self.assertions)
-
-
-# ----------------------------------------------------------------------------------------------------
-__all__ = [
-    "AssertionSpec",
-    "BootPlan",
-    "CloudInitState",
-    "CloudInitStatusAssertion",
-    "FileAssertion",
-    "ImageSpec",
-    "PackageInstalledAssertion",
-    "PayloadSpec",
-    "ResourceSpec",
-    "ScenarioV1",
-    "SeedSpec",
-]

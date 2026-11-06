@@ -26,7 +26,7 @@ from typing import IO, Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .errors import CloudBootError, ErrorPhase
+from .errors import CloudBootError, ErrorPhase, ExitCode
 from .models import ImageSpec
 from .process import Clock, CommandRunner
 
@@ -54,14 +54,24 @@ def _sleep_until_cancelled(seconds: float, cancelled: threading.Event | None) ->
 
 
 class ImageStoreError(CloudBootError):
-    """Expected failure while resolving or caching a cloud image."""
+    """Expected failure while resolving or caching a cloud image.
 
-    def __init__(self, message: str, *, context: Mapping[str, object] | None = None) -> None:
+    Failures default to the preparation exit code; deadline expiry uses the timeout exit code.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: Mapping[str, object] | None = None,
+        exit_code: ExitCode = ExitCode.PREPARATION,
+    ) -> None:
         super().__init__(
             message,
             code="image-store-error",
             phase=ErrorPhase.PREPARATION,
             context=context,
+            exit_code=exit_code,
         )
 
 
@@ -166,7 +176,7 @@ class ImageStore:
     def _remaining(self, deadline: float, operation: str) -> float:
         remaining = deadline - self._monotonic()
         if remaining <= 0:
-            raise ImageStoreError(f"timed out during {operation}")
+            raise ImageStoreError(f"timed out during {operation}", exit_code=ExitCode.TIMEOUT)
         return remaining
 
     def _acquire_lock(self, fd: int, deadline: float) -> None:

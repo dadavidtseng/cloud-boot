@@ -13,19 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from cloud_boot.errors import (
-    CloudBootError,
-    ExitCode,
-    ProcessExecutionError,
-    ProcessStartError,
-    ProcessTimeoutError,
-)
+from cloud_boot.errors import CloudBootError, ExitCode
 from cloud_boot.process import (
     CommandRunner,
     CommandSpec,
     ManagedProcess,
     MemorySink,
     OutputSinks,
+    ProcessExecutionError,
+    ProcessStartError,
+    ProcessTimeoutError,
     deadline_after,
 )
 

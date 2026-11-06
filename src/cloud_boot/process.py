@@ -23,12 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import IO, Protocol, cast
 
-from .errors import (
-    ExitCode,
-    ProcessExecutionError,
-    ProcessStartError,
-    ProcessTimeoutError,
-)
+from .errors import CloudBootError, ErrorPhase, ExitCode
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
@@ -42,6 +37,9 @@ __all__ = [
     "MemorySink",
     "OutputSink",
     "OutputSinks",
+    "ProcessExecutionError",
+    "ProcessStartError",
+    "ProcessTimeoutError",
     "deadline_after",
     "run",
     "start",
@@ -64,6 +62,76 @@ DEFAULT_ENV_ALLOWLIST = frozenset(
         "USER",
     }
 )
+
+
+# ----------------------------------------------------------------------------------------------------
+class ProcessStartError(CloudBootError):
+    """Raised when a child process cannot be created."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: Mapping[str, object] | None = None,
+        remediation: str | None = None,
+        exit_code: int | ExitCode = ExitCode.HOST_UNAVAILABLE,
+    ) -> None:
+        super().__init__(
+            message,
+            code="process-start-failed",
+            phase=ErrorPhase.PROCESS,
+            remediation=remediation,
+            context=context,
+            exit_code=exit_code,
+        )
+
+
+# ----------------------------------------------------------------------------------------------------
+class ProcessExecutionError(CloudBootError):
+    """Raised when a caller explicitly requires a zero return code."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int,
+        context: Mapping[str, object] | None = None,
+        exit_code: int | ExitCode = ExitCode.INTERNAL,
+    ) -> None:
+        merged = dict(context or {})
+        merged["returncode"] = returncode
+        super().__init__(
+            message,
+            code="process-failed",
+            phase=ErrorPhase.PROCESS,
+            context=merged,
+            exit_code=exit_code,
+        )
+        self.returncode = returncode
+
+
+# ----------------------------------------------------------------------------------------------------
+class ProcessTimeoutError(CloudBootError):
+    """Raised after a process deadline and bounded TERM/KILL cleanup."""
+
+    result: CommandResult | None
+
+    def __init__(
+        self,
+        message: str = "command exceeded its deadline",
+        *,
+        context: Mapping[str, object] | None = None,
+        result: CommandResult | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code="process-timeout",
+            phase=ErrorPhase.PROCESS,
+            remediation="Increase the command deadline or inspect the captured output.",
+            context=context,
+            exit_code=ExitCode.TIMEOUT,
+        )
+        self.result = result
 
 
 # ----------------------------------------------------------------------------------------------------

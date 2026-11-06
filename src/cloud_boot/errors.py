@@ -1,27 +1,20 @@
-"""Domain errors shared by the cloud-boot host adapters.
+"""Shared error contract for cloud-boot components.
 
-The command runner deliberately does not decide which product phase a command
-belongs to.  Callers can provide the phase and exit-code mapping while still
-getting one stable, serialisable error shape.
+This module holds only the base error, its phases, and the exit-code table, and imports nothing
+else from the package. Each component defines its own `CloudBootError` subclasses next to the code
+that raises them, so callers can handle every expected failure through one stable shape.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import IntEnum, StrEnum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .process import CommandResult
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
     "CloudBootError",
     "ErrorPhase",
     "ExitCode",
-    "ProcessExecutionError",
-    "ProcessStartError",
-    "ProcessTimeoutError",
 ]
 
 
@@ -109,73 +102,3 @@ class CloudBootError(Exception):
         if self.remediation is not None:
             result["remediation"] = self.remediation
         return result
-
-
-# ----------------------------------------------------------------------------------------------------
-class ProcessStartError(CloudBootError):
-    """Raised when a child process cannot be created."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        context: Mapping[str, object] | None = None,
-        remediation: str | None = None,
-        exit_code: int | ExitCode = ExitCode.HOST_UNAVAILABLE,
-    ) -> None:
-        super().__init__(
-            message,
-            code="process-start-failed",
-            phase=ErrorPhase.PROCESS,
-            remediation=remediation,
-            context=context,
-            exit_code=exit_code,
-        )
-
-
-# ----------------------------------------------------------------------------------------------------
-class ProcessExecutionError(CloudBootError):
-    """Raised when a caller explicitly requires a zero return code."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        returncode: int,
-        context: Mapping[str, object] | None = None,
-        exit_code: int | ExitCode = ExitCode.INTERNAL,
-    ) -> None:
-        merged = dict(context or {})
-        merged["returncode"] = returncode
-        super().__init__(
-            message,
-            code="process-failed",
-            phase=ErrorPhase.PROCESS,
-            context=merged,
-            exit_code=exit_code,
-        )
-        self.returncode = returncode
-
-
-# ----------------------------------------------------------------------------------------------------
-class ProcessTimeoutError(CloudBootError):
-    """Raised after a process deadline and bounded TERM/KILL cleanup."""
-
-    result: CommandResult | None
-
-    def __init__(
-        self,
-        message: str = "command exceeded its deadline",
-        *,
-        context: Mapping[str, object] | None = None,
-        result: CommandResult | None = None,
-    ) -> None:
-        super().__init__(
-            message,
-            code="process-timeout",
-            phase=ErrorPhase.PROCESS,
-            remediation="Increase the command deadline or inspect the captured output.",
-            context=context,
-            exit_code=ExitCode.TIMEOUT,
-        )
-        self.result = result

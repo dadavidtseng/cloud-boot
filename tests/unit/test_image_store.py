@@ -17,6 +17,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+from cloud_boot.errors import ErrorPhase, ExitCode
 from cloud_boot.image_store import ImageStore, ImageStoreError, _sleep_until_cancelled
 from cloud_boot.models import ImageSpec
 from cloud_boot.process import CommandRunner
@@ -132,8 +133,10 @@ def test_rejects_digest_mismatch_and_leaves_no_partial(tmp_path: Path) -> None:
     )
     image_store = store(tmp_path, downloader, base_url="https://images.test/noble/current/")
 
-    with pytest.raises(ImageStoreError, match="checksum"):
+    with pytest.raises(ImageStoreError, match="checksum") as raised:
         image_store.resolve()
+    assert raised.value.phase == ErrorPhase.PREPARATION
+    assert raised.value.exit_code == ExitCode.PREPARATION
     assert not list((tmp_path / "cache").glob(".partial-*"))
     assert not (tmp_path / "cache" / "sha256").exists()
 
@@ -533,9 +536,10 @@ def test_lock_deadline_uses_fake_clock_and_preserves_live_partials(tmp_path: Pat
 
     with (locks / "noble.lock").open("a+b") as owner:
         fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(ImageStoreError, match=r"timed out.*lock"):
+        with pytest.raises(ImageStoreError, match=r"timed out.*lock") as raised:
             image_store.resolve()
 
+    assert raised.value.exit_code == ExitCode.TIMEOUT
     assert clock.now == pytest.approx(0.25)
     # Lock polling has nothing to cancel, so it never passes an event.
     assert clock.waits
@@ -556,7 +560,7 @@ def test_download_deadline_with_fake_clock_cleans_partial(tmp_path: Path, phase:
     image = AdvancingResponse(IMAGE_BYTES, clock) if phase == "image" else FakeResponse(IMAGE_BYTES)
     downloader = FakeDownloader({manifest_url: [manifest], image_url: [image]})
 
-    with pytest.raises(ImageStoreError, match="timed out"):
+    with pytest.raises(ImageStoreError, match="timed out") as raised:
         store(
             tmp_path,
             downloader,
@@ -566,6 +570,8 @@ def test_download_deadline_with_fake_clock_cleans_partial(tmp_path: Path, phase:
             resolve_timeout_seconds=0.5,
         ).resolve()
 
+    # The timeout crosses the producer-thread boundary without losing its exit code.
+    assert raised.value.exit_code == ExitCode.TIMEOUT
     assert not list((tmp_path / "cache").glob(".partial-*"))
     assert not list((tmp_path / "cache" / "sha256").glob("*.img"))
     assert not (tmp_path / "cache" / "releases" / "noble.json").exists()

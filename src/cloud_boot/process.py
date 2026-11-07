@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, Literal, Protocol, cast
 
 from .errors import CloudBootError, ErrorPhase, ExitCode
 
@@ -40,6 +40,7 @@ __all__ = [
     "ProcessExecutionError",
     "ProcessStartError",
     "ProcessTimeoutError",
+    "SinkFailure",
     "deadline_after",
     "run",
     "start",
@@ -177,6 +178,23 @@ class OutputSinks:
 
 
 # ----------------------------------------------------------------------------------------------------
+type StreamName = Literal["stdout", "stderr"]
+
+
+# ----------------------------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class SinkFailure:
+    """A live output sink that raised and stopped receiving output.
+
+    The reader keeps draining the stream after a failure, so the child never blocks on a full pipe
+    or receives `SIGPIPE`; only forwarding to the failed sink stops.
+    """
+
+    stream: StreamName
+    error: Exception
+
+
+# ----------------------------------------------------------------------------------------------------
 def _write_sink(sink: Sink, data: bytes) -> None:
     """Forward one chunk of child output to a caller-provided sink.
 
@@ -185,7 +203,8 @@ def _write_sink(sink: Sink, data: bytes) -> None:
     any other value is silently ignored. The value returned by the sink is discarded.
 
     This runs on a stream reader thread. A sink shared by stdout and stderr receives writes from two
-    threads at once and must be thread-safe. Exceptions raised by the sink are not caught.
+    threads at once and must be thread-safe. Exceptions raised by the sink propagate to the reader
+    thread, which records them as a :class:`SinkFailure` and stops forwarding to that sink.
 
     Args:
         sink: Destination for the chunk, or `None` to drop it.
@@ -263,6 +282,7 @@ class CommandResult:
     stderr: bytes
     duration_seconds: float
     timed_out: bool = False
+    sink_failures: tuple[SinkFailure, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -337,8 +357,10 @@ class ManagedProcess:
         self._stderr = MemorySink()
         self._threads: list[threading.Thread] = []
         self._stdin_thread: threading.Thread | None = None
-        self._start_reader(process.stdout, self._stdout, self._stdout_sink)  # thread 1, read stdout
-        self._start_reader(process.stderr, self._stderr, self._stderr_sink)  # thread 2, read stderr
+        self._sink_failures: list[SinkFailure] = []
+        self._sink_failures_lock = threading.Lock()
+        self._start_reader(process.stdout, "stdout", self._stdout, self._stdout_sink)  # thread 1
+        self._start_reader(process.stderr, "stderr", self._stderr, self._stderr_sink)  # thread 2
         self._start_stdin_writer()  # thread 3, write stdin
 
     @property
@@ -350,9 +372,20 @@ class ManagedProcess:
         """Return the current exit status without waiting."""
         return self._process.poll()
 
+    @property
+    def sink_failures(self) -> tuple[SinkFailure, ...]:
+        """Return output sinks that have failed so far; readable while the child still runs."""
+        with self._sink_failures_lock:
+            return tuple(self._sink_failures)
+
+    def _record_sink_failure(self, name: StreamName, error: Exception) -> None:
+        with self._sink_failures_lock:
+            self._sink_failures.append(SinkFailure(stream=name, error=error))
+
     def _start_reader(
         self,
         stream: IO[bytes] | None,
+        name: StreamName,
         capture: MemorySink,
         sink: Sink,
     ) -> None:
@@ -360,6 +393,7 @@ class ManagedProcess:
             return
 
         def read_stream() -> None:
+            forward = sink
             try:
                 read1 = getattr(stream, "read1", None)
                 reader = cast(Callable[[int], bytes], read1) if callable(read1) else stream.read
@@ -368,7 +402,14 @@ class ManagedProcess:
                     if not chunk:
                         return
                     capture.write(chunk)
-                    _write_sink(sink, chunk)
+                    if forward is None:
+                        continue
+                    try:
+                        _write_sink(forward, chunk)
+                    except Exception as error:
+                        # Keep draining: closing the pipe early would SIGPIPE or block the child.
+                        self._record_sink_failure(name, error)
+                        forward = None
             finally:
                 stream.close()
 
@@ -465,6 +506,7 @@ class ManagedProcess:
             stderr=self._stderr.getvalue(),
             duration_seconds=max(0.0, self._clock() - self._started_at),
             timed_out=timed_out,
+            sink_failures=self.sink_failures,
         )
 
     def _wait_until(self, deadline: float) -> int | None:

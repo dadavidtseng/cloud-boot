@@ -27,6 +27,7 @@ from .errors import CloudBootError, ErrorPhase, ExitCode
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
+    "DEFAULT_CAPTURE_LIMIT_BYTES",
     "DEFAULT_ENV_ALLOWLIST",
     "DEFAULT_TIMEOUT_SECONDS",
     "Clock",
@@ -51,6 +52,8 @@ DEFAULT_TIMEOUT_SECONDS = 300.0  # If timeout seconds is unset, the default time
 TERMINATION_GRACE_SECONDS = (
     2.0  # After sending SIGTERM, 2 seconds are given for the program to terminate
 )
+# In-memory stdout/stderr capture per stream; live sinks still receive every byte.
+DEFAULT_CAPTURE_LIMIT_BYTES = 1024 * 1024
 DEFAULT_ENV_ALLOWLIST = frozenset(
     {
         "HOME",
@@ -151,21 +154,40 @@ type Sleeper = Callable[[float], None]
 
 # ----------------------------------------------------------------------------------------------------
 class MemorySink:
-    """Thread-safe byte sink useful for callers and tests."""
+    """Thread-safe byte sink useful for callers and tests.
 
-    def __init__(self) -> None:
+    Without a `limit`, every byte is kept. With a `limit`, only the most recent `limit` bytes are
+    kept, because the end of a child's output usually explains its failure; older bytes are counted
+    in `dropped_bytes` so truncation is never silent.
+    """
+
+    def __init__(self, limit: int | None = None) -> None:
+        if limit is not None and (isinstance(limit, bool) or limit < 0):
+            raise ValueError("memory sink limit must be a non-negative integer")
         self._buffer = bytearray()
         self._lock = threading.Lock()
+        self._limit = limit
+        self._dropped_bytes = 0
 
     def write(self, data: bytes) -> None:
         """Append bytes under a lock so concurrent writers cannot interleave chunks."""
         with self._lock:
             self._buffer.extend(data)
+            if self._limit is not None and len(self._buffer) > self._limit:
+                excess = len(self._buffer) - self._limit
+                del self._buffer[:excess]
+                self._dropped_bytes += excess
 
     def getvalue(self) -> bytes:
         """Return an immutable snapshot unaffected by later writes."""
         with self._lock:
             return bytes(self._buffer)
+
+    @property
+    def dropped_bytes(self) -> int:
+        """Return how many of the oldest bytes were discarded to stay within the limit."""
+        with self._lock:
+            return self._dropped_bytes
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -236,6 +258,7 @@ class CommandSpec:
     env_allowlist: frozenset[str] = field(default_factory=lambda: DEFAULT_ENV_ALLOWLIST)
     stdin: bytes | None = None
     name: str | None = None
+    capture_limit_bytes: int = DEFAULT_CAPTURE_LIMIT_BYTES
 
     def __post_init__(self) -> None:
         args = tuple(self.argv)
@@ -269,6 +292,9 @@ class CommandSpec:
 
         if self.stdin is not None and not isinstance(self.stdin, bytes):
             raise ValueError("stdin must be bytes when provided")
+        limit = self.capture_limit_bytes
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            raise ValueError("capture_limit_bytes must be a non-negative integer")
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -283,6 +309,8 @@ class CommandResult:
     duration_seconds: float
     timed_out: bool = False
     sink_failures: tuple[SinkFailure, ...] = ()
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
 
     @property
     def succeeded(self) -> bool:
@@ -353,8 +381,8 @@ class ManagedProcess:
         self._started_at = clock()
         self._stdout_sink = sinks.stdout
         self._stderr_sink = sinks.stderr
-        self._stdout = MemorySink()
-        self._stderr = MemorySink()
+        self._stdout = MemorySink(spec.capture_limit_bytes)
+        self._stderr = MemorySink(spec.capture_limit_bytes)
         self._threads: list[threading.Thread] = []
         self._stdin_thread: threading.Thread | None = None
         self._sink_failures: list[SinkFailure] = []
@@ -507,6 +535,8 @@ class ManagedProcess:
             duration_seconds=max(0.0, self._clock() - self._started_at),
             timed_out=timed_out,
             sink_failures=self.sink_failures,
+            stdout_dropped_bytes=self._stdout.dropped_bytes,
+            stderr_dropped_bytes=self._stderr.dropped_bytes,
         )
 
     def _wait_until(self, deadline: float) -> int | None:

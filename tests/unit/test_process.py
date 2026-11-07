@@ -15,6 +15,7 @@ import pytest
 
 from cloud_boot.errors import ExitCode
 from cloud_boot.process import (
+    DEFAULT_CAPTURE_LIMIT_BYTES,
     CommandRunner,
     CommandSpec,
     ManagedProcess,
@@ -470,3 +471,71 @@ def test_sink_failure_is_visible_while_the_process_runs() -> None:
     finally:
         result = process.stop(timeout=1)
     assert len(result.sink_failures) == 1
+
+
+def test_capture_keeps_the_tail_while_sinks_receive_everything() -> None:
+    stdout_received: list[bytes] = []
+    code = (
+        "import sys; sys.stdout.write('x' * 3000 + 'END'); sys.stdout.flush(); "
+        "sys.stderr.write('e' * 1500)"
+    )
+
+    result = CommandRunner().run(
+        CommandSpec((PYTHON, "-c", code), capture_limit_bytes=1000),
+        timeout=10,
+        sinks=OutputSinks(stdout=stdout_received.append),
+    )
+
+    assert result.stdout == (b"x" * 3000 + b"END")[-1000:]
+    assert result.stdout_dropped_bytes == 2003
+    assert result.stderr == b"e" * 1000
+    assert result.stderr_dropped_bytes == 500
+    assert b"".join(stdout_received) == b"x" * 3000 + b"END"
+
+
+def test_default_capture_limit_bounds_memory() -> None:
+    result = CommandRunner().run(
+        python_spec(
+            f"import sys; sys.stdout.buffer.write(b'x' * {DEFAULT_CAPTURE_LIMIT_BYTES + 10})"
+        ),
+        timeout=10,
+    )
+
+    assert len(result.stdout) == DEFAULT_CAPTURE_LIMIT_BYTES
+    assert result.stdout_dropped_bytes == 10
+
+
+def test_zero_capture_limit_disables_capture_but_not_sinks() -> None:
+    received: list[bytes] = []
+
+    result = CommandRunner().run(
+        CommandSpec((PYTHON, "-c", "print('console')"), capture_limit_bytes=0),
+        timeout=10,
+        sinks=OutputSinks(stdout=received.append),
+    )
+
+    assert result.stdout == b""
+    assert result.stdout_dropped_bytes == len(b"console\n")
+    assert b"".join(received) == b"console\n"
+
+
+@pytest.mark.parametrize("limit", [-1, True, 1.5])
+def test_rejects_invalid_capture_limit(limit: object) -> None:
+    with pytest.raises(ValueError, match="capture_limit_bytes"):
+        CommandSpec((PYTHON, "-c", "pass"), capture_limit_bytes=limit)  # type: ignore[arg-type]
+
+
+def test_memory_sink_limit_keeps_recent_bytes() -> None:
+    limited = MemorySink(limit=4)
+    unlimited = MemorySink()
+
+    for sink in (limited, unlimited):
+        sink.write(b"abc")
+        sink.write(b"def")
+
+    assert limited.getvalue() == b"cdef"
+    assert limited.dropped_bytes == 2
+    assert unlimited.getvalue() == b"abcdef"
+    assert unlimited.dropped_bytes == 0
+    with pytest.raises(ValueError, match="non-negative"):
+        MemorySink(limit=-1)

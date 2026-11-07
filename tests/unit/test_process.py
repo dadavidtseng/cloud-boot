@@ -23,6 +23,7 @@ from cloud_boot.process import (
     ProcessExecutionError,
     ProcessStartError,
     ProcessTimeoutError,
+    SinkFailure,
     deadline_after,
 )
 
@@ -417,3 +418,55 @@ def test_command_spec_accepts_path_cwd(tmp_path: Path) -> None:
         python_spec("import os; print(os.getcwd())", cwd=tmp_path),
     )
     assert Path(result.stdout.decode().strip()) == tmp_path
+
+
+def test_failed_sink_keeps_draining_and_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    unhandled: list[BaseException | None] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: unhandled.append(args.exc_value))
+    failing_calls: list[bytes] = []
+    stderr_received: list[bytes] = []
+    disk_full = OSError(28, "No space left on device")
+
+    def failing_sink(chunk: bytes) -> None:
+        failing_calls.append(chunk)
+        raise disk_full
+
+    # Far more than a pipe buffer, so closing the pipe after the failure would SIGPIPE the child.
+    result = CommandRunner().run(
+        python_spec(
+            "import sys; sys.stdout.buffer.write(b'x' * 300_000); sys.stdout.flush(); "
+            "sys.stderr.write('still forwarded')"
+        ),
+        timeout=10,
+        sinks=OutputSinks(stdout=failing_sink, stderr=stderr_received.append),
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == b"x" * 300_000
+    assert len(failing_calls) == 1
+    assert result.sink_failures == (SinkFailure(stream="stdout", error=disk_full),)
+    assert b"".join(stderr_received) == b"still forwarded"
+    assert unhandled == []
+
+
+def test_sink_failure_is_visible_while_the_process_runs() -> None:
+    def failing_sink(_chunk: bytes) -> None:
+        raise RuntimeError("console log unavailable")
+
+    process = CommandRunner(termination_grace_seconds=0.05).start(
+        python_spec("import sys, time; sys.stderr.write('boot'); sys.stderr.flush(); time.sleep(30)"),
+        OutputSinks(stderr=failing_sink),
+    )
+    try:
+        deadline = deadline_after(2)
+        while not process.sink_failures:
+            if time.monotonic() >= deadline:
+                pytest.fail("sink failure was not reported while the process ran")
+            time.sleep(0.01)
+
+        assert process.poll() is None
+        assert [failure.stream for failure in process.sink_failures] == ["stderr"]
+        assert isinstance(process.sink_failures[0].error, RuntimeError)
+    finally:
+        result = process.stop(timeout=1)
+    assert len(result.sink_failures) == 1

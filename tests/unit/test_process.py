@@ -399,6 +399,19 @@ def test_command_spec_rejects_invalid_arguments() -> None:
         CommandSpec(())
     with pytest.raises(ValueError, match="NUL"):
         CommandSpec(("echo\x00",))
+    with pytest.raises(ValueError, match="NUL"):
+        CommandSpec(("echo", "a\x00b"))
+    with pytest.raises(ValueError, match=r"argv\[0\]"):
+        CommandSpec(("", "arg"))
+
+
+def test_empty_arguments_reach_the_child_unchanged() -> None:
+    result = CommandRunner().run(
+        CommandSpec((PYTHON, "-c", "import sys; print(repr(sys.argv[1:]))", "", "x", "")),
+        timeout=10,
+    )
+
+    assert result.stdout.strip() == b"['', 'x', '']"
 
 
 def test_execution_error_records_returncode_in_context() -> None:

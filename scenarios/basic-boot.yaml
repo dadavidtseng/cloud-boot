@@ -1,0 +1,30 @@
+scenario_version: 1
+name: basic-boot
+description: >-
+  Boot the official Ubuntu 24.04 (Noble) amd64 cloud image once and prove that cloud-init
+  consumed the NoCloud seed. The guest needs no network access: it writes a marker file from
+  user-data and installs nothing. The checks are that cloud-init finished in the done state,
+  that the marker holds the expected text, and that openssh-server is installed. Every check
+  runs over SSH, so openssh-server is the transport foundation rather than an arbitrary
+  package; if a future image drops or replaces it, the transport assumption has changed.
+seed:
+  instance_id: cloud-boot-basic-001
+  local_hostname: basic-boot
+  user_data:
+    inline: |
+      #cloud-config
+      write_files:
+        - path: /var/tmp/boot-marker
+          content: boot-ok
+assertions:
+  - id: cloud-init-done
+    type: cloud-init-status
+    expected: done
+  - id: marker-created
+    type: file
+    path: /var/tmp/boot-marker
+    exists: true
+    content_contains: boot-ok
+  - id: ssh-installed
+    type: package-installed
+    name: openssh-server

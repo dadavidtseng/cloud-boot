@@ -265,8 +265,11 @@ class CommandSpec:
 
         if not args:
             raise ValueError("argv must contain at least one argument")
-        if any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in args):
-            raise ValueError("argv entries must be non-empty strings without NUL bytes")
+        # Empty arguments are legitimate with shell=False (for example `ssh-keygen -N ""`).
+        if any(not isinstance(arg, str) or "\x00" in arg for arg in args):
+            raise ValueError("argv entries must be strings without NUL bytes")
+        if not args[0]:
+            raise ValueError("the program name in argv[0] must not be empty")
         object.__setattr__(self, "argv", args)
 
         if self.cwd is not None:

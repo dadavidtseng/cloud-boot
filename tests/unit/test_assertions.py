@@ -19,7 +19,12 @@ from cloud_boot.assertions import (
     default_registry,
     run_assertions,
 )
-from cloud_boot.models import CloudInitStatusAssertion, FileAssertion, PackageInstalledAssertion
+from cloud_boot.models import (
+    AssertionSpec,
+    CloudInitStatusAssertion,
+    FileAssertion,
+    PackageInstalledAssertion,
+)
 from cloud_boot.process import ProcessTimeoutError
 from cloud_boot.ssh import GuestResult, SshTransportError
 
@@ -252,7 +257,7 @@ def test_transport_loss_blocks_the_current_and_remaining_assertions_in_order() -
             ),
         ]
     )
-    assertions = [cloud_init(), file_check(), package()]
+    assertions: list[AssertionSpec] = [cloud_init(), file_check(), package()]
 
     results = run_assertions(assertions, transport, boot="boot", clock=FakeClock())
 
@@ -271,7 +276,7 @@ def test_transport_loss_blocks_the_current_and_remaining_assertions_in_order() -
 
 def test_timeout_fails_only_that_assertion_and_uses_its_own_limit() -> None:
     transport = FakeTransport([ProcessTimeoutError(), guest(stdout=b"installed\t1:9.6p1\n")])
-    assertions = [file_check(timeout_seconds=5), package()]
+    assertions: list[AssertionSpec] = [file_check(timeout_seconds=5), package()]
 
     results = run_assertions(assertions, transport, boot="boot", clock=FakeClock())
 

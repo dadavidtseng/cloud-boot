@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError
 
 import pytest
@@ -61,14 +62,14 @@ class FailingResponse(FakeResponse):
         super().__init__(data)
         self.fail_after = fail_after
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int | None = -1) -> bytes:
         if self.tell() >= self.fail_after:
             raise OSError("connection interrupted")
         limit = self.fail_after - self.tell()
-        return super().read(limit if size < 0 else min(size, limit))
+        return super().read(limit if size is None or size < 0 else min(size, limit))
 
 
-def store(tmp_path: Path, downloader: FakeDownloader, **kwargs: object) -> ImageStore:
+def store(tmp_path: Path, downloader: FakeDownloader, **kwargs: Any) -> ImageStore:
     return ImageStore(tmp_path / "cache", downloader=downloader, **kwargs)
 
 
@@ -355,7 +356,7 @@ class AdvancingResponse(FakeResponse):
         super().__init__(data)
         self.clock = clock
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int | None = -1) -> bytes:
         self.clock.advance(0.25)
         return super().read(size)
 
@@ -487,7 +488,7 @@ def test_contending_resolvers_download_once(tmp_path: Path, monkeypatch: pytest.
             raise
 
     class GatedResponse(FakeResponse):
-        def read(self, size: int = -1) -> bytes:
+        def read(self, size: int | None = -1) -> bytes:
             downloading.set()
             if not release.wait(3):
                 raise TimeoutError("test did not release download")
@@ -647,7 +648,7 @@ def test_tampered_metadata_digest_is_rejected_before_path_access(
     native_open = Path.open
     opened: list[Path] = []
 
-    def record_open(path: Path, *args: object, **kwargs: object):
+    def record_open(path: Path, *args: Any, **kwargs: Any) -> Any:
         opened.append(path)
         return native_open(path, *args, **kwargs)
 
@@ -680,7 +681,7 @@ def test_cache_rehash_obeys_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyP
     cached = image_store.resolve()
     native_open = Path.open
 
-    def advancing_open(path: Path, *args: object, **kwargs: object):
+    def advancing_open(path: Path, *args: Any, **kwargs: Any) -> Any:
         if path == cached.path and args == ("rb",):
             return AdvancingResponse(IMAGE_BYTES, clock)
         return native_open(path, *args, **kwargs)

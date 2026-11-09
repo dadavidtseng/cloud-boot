@@ -276,9 +276,12 @@ def test_start_streams_console_and_returns_after_the_startup_window(tmp_path: Pa
     eventually(lambda: console.getvalue() == b"[    0.000000] Linux version 6.8")
 
 
+def port_conflict() -> FakePopen:
+    return FakePopen(stderr=PORT_CONFLICT, exit_after_polls=0, returncode=1)
+
+
 def test_start_retries_port_conflicts_with_fresh_ports(tmp_path: Path) -> None:
-    conflict = {"stderr": PORT_CONFLICT, "exit_after_polls": 0, "returncode": 1}
-    factory = FakeFactory([FakePopen(**conflict), FakePopen(**conflict), FakePopen()])
+    factory = FakeFactory([port_conflict(), port_conflict(), FakePopen()])
     backend, _, _ = make_backend(factory)
 
     handle = backend.start(launch_spec(tmp_path))
@@ -291,8 +294,7 @@ def test_start_retries_port_conflicts_with_fresh_ports(tmp_path: Path) -> None:
 
 
 def test_start_gives_up_after_three_port_conflicts(tmp_path: Path) -> None:
-    conflict = {"stderr": PORT_CONFLICT, "exit_after_polls": 0, "returncode": 1}
-    factory = FakeFactory([FakePopen(**conflict) for _ in range(3)])
+    factory = FakeFactory([port_conflict() for _ in range(3)])
     backend, _, _ = make_backend(factory)
 
     with pytest.raises(VmLaunchError, match="after 3 attempts") as raised:

@@ -58,7 +58,7 @@ include = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src"]
+files = ["src", "tests"]
 pretty = true
 show_error_codes = true
 warn_unreachable = true

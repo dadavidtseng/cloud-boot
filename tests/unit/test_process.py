@@ -20,12 +20,11 @@ from cloud_boot.process import (
     CommandSpec,
     ManagedProcess,
     MemorySink,
-    OutputSinks,
-    ProcessExecutionError,
     ProcessStartError,
     ProcessTimeoutError,
     SinkFailure,
-    deadline_after,
+    StreamSinks,
+    _resolve_deadline,
 )
 
 PYTHON = sys.executable
@@ -86,7 +85,7 @@ def test_streams_are_forwarded_to_injected_sinks() -> None:
     stderr = MemorySink()
     result = CommandRunner().run(
         python_spec("import sys; sys.stdout.write('a'); sys.stderr.write('b')"),
-        sinks=OutputSinks(stdout=stdout, stderr=stderr),
+        sinks=StreamSinks(stdout=stdout, stderr=stderr),
     )
 
     assert result.stdout == b"a"
@@ -162,15 +161,11 @@ def test_missing_command_has_typed_start_error() -> None:
     assert "environment_keys" in caught.value.context
 
 
-def test_nonzero_status_is_a_result_until_checked() -> None:
+def test_nonzero_status_is_a_result_not_an_error() -> None:
     result = CommandRunner().run(python_spec("raise SystemExit(7)"))
 
     assert not result.succeeded
     assert result.returncode == 7
-    with pytest.raises(ProcessExecutionError) as caught:
-        result.check_returncode(exit_code=ExitCode.VM)
-    assert caught.value.returncode == 7
-    assert caught.value.exit_code == ExitCode.VM
 
 
 def test_deadline_timeout_terminates_child() -> None:
@@ -193,7 +188,7 @@ def test_termination_reaches_child_process_group() -> None:
         "print(p.pid, flush=True)"
     )
     process = CommandRunner(termination_grace_seconds=0.05).start(CommandSpec((PYTHON, "-c", child)))
-    deadline = deadline_after(2)
+    deadline = time.monotonic() + 2
     while not process._stdout.getvalue():
         if time.monotonic() >= deadline:
             process.kill()
@@ -208,7 +203,7 @@ def test_termination_reaches_child_process_group() -> None:
 
     try:
         process.stop(timeout=0.5)
-        deadline = deadline_after(2)
+        deadline = time.monotonic() + 2
         while True:
             try:
                 os.kill(grandchild_pid, 0)
@@ -373,7 +368,7 @@ def test_callable_sinks_receive_output() -> None:
     stderr: list[bytes] = []
     result = CommandRunner().run(
         python_spec("import sys; sys.stdout.write('out'); sys.stderr.write('err')"),
-        sinks=OutputSinks(stdout=stdout.append, stderr=stderr.append),
+        sinks=StreamSinks(stdout=stdout.append, stderr=stderr.append),
     )
 
     assert result.stdout == b"out"
@@ -414,17 +409,12 @@ def test_empty_arguments_reach_the_child_unchanged() -> None:
     assert result.stdout.strip() == b"['', 'x', '']"
 
 
-def test_execution_error_records_returncode_in_context() -> None:
-    error = ProcessExecutionError("failed", returncode=3)
-
-    assert error.phase == "process"
-    assert error.context == {"returncode": 3}
-    assert error.remediation is None
-
-
-def test_deadline_helpers_reject_unbounded_values() -> None:
-    with pytest.raises(ValueError, match="deadline duration must be finite and non-negative"):
-        deadline_after(float("inf"))
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_deadline_resolution_rejects_unbounded_values(value: float) -> None:
+    with pytest.raises(ValueError, match="timeout must be finite"):
+        _resolve_deadline(timeout=value, deadline=None, clock=time.monotonic, default=1.0)
+    with pytest.raises(ValueError, match="deadline must be finite"):
+        _resolve_deadline(timeout=None, deadline=value, clock=time.monotonic, default=1.0)
 
 
 def test_command_spec_accepts_path_cwd(tmp_path: Path) -> None:
@@ -452,7 +442,7 @@ def test_failed_sink_keeps_draining_and_reports_failure(monkeypatch: pytest.Monk
             "sys.stderr.write('still forwarded')"
         ),
         timeout=10,
-        sinks=OutputSinks(stdout=failing_sink, stderr=stderr_received.append),
+        sinks=StreamSinks(stdout=failing_sink, stderr=stderr_received.append),
     )
 
     assert result.returncode == 0
@@ -469,10 +459,10 @@ def test_sink_failure_is_visible_while_the_process_runs() -> None:
 
     process = CommandRunner(termination_grace_seconds=0.05).start(
         python_spec("import sys, time; sys.stderr.write('boot'); sys.stderr.flush(); time.sleep(30)"),
-        OutputSinks(stderr=failing_sink),
+        StreamSinks(stderr=failing_sink),
     )
     try:
-        deadline = deadline_after(2)
+        deadline = time.monotonic() + 2
         while not process.sink_failures:
             if time.monotonic() >= deadline:
                 pytest.fail("sink failure was not reported while the process ran")
@@ -496,7 +486,7 @@ def test_capture_keeps_the_tail_while_sinks_receive_everything() -> None:
     result = CommandRunner().run(
         CommandSpec((PYTHON, "-c", code), capture_limit_bytes=1000),
         timeout=10,
-        sinks=OutputSinks(stdout=stdout_received.append),
+        sinks=StreamSinks(stdout=stdout_received.append),
     )
 
     assert result.stdout == (b"x" * 3000 + b"END")[-1000:]
@@ -524,7 +514,7 @@ def test_zero_capture_limit_disables_capture_but_not_sinks() -> None:
     result = CommandRunner().run(
         CommandSpec((PYTHON, "-c", "print('console')"), capture_limit_bytes=0),
         timeout=10,
-        sinks=OutputSinks(stdout=received.append),
+        sinks=StreamSinks(stdout=received.append),
     )
 
     assert result.stdout == b""

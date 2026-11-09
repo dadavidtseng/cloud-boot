@@ -2,11 +2,20 @@
 # process.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Bounded, injectable host-process execution primitives.
+"""Bounded, injectable host-process execution: every external command goes through here.
 
-All external commands go through this module.  It intentionally exposes results rather than
-interpreting command-specific exit statuses; higher layers choose the appropriate cloud-boot phase and
-exit-code mapping.
+Guarantees for every command:
+
+- No shell: argv is passed as a list with `shell=False`, so nothing is ever shell-parsed.
+- Bounded time: every wait has a monotonic deadline; on expiry the whole process group gets
+  SIGTERM, then SIGKILL after a grace period.
+- Own process group: children start in a new session, so stopping one also stops anything it
+  spawned and a terminal Ctrl-C reaches cloud-boot first.
+- Minimal environment: only allowlisted variables are inherited from the host.
+- Bounded memory: captured stdout/stderr stop growing at a limit; live sinks still see every byte.
+
+This layer reports what happened and does not interpret exit statuses. Callers decide what a
+status means and which cloud-boot phase and exit code it maps to.
 """
 
 # ----------------------------------------------------------------------------------------------------
@@ -30,30 +39,37 @@ __all__ = [
     "DEFAULT_CAPTURE_LIMIT_BYTES",
     "DEFAULT_ENV_ALLOWLIST",
     "DEFAULT_TIMEOUT_SECONDS",
+    "ByteWriter",
     "Clock",
     "CommandResult",
     "CommandRunner",
     "CommandSpec",
     "ManagedProcess",
     "MemorySink",
-    "OutputSink",
-    "OutputSinks",
-    "ProcessExecutionError",
     "ProcessStartError",
     "ProcessTimeoutError",
     "SinkFailure",
-    "deadline_after",
-    "run",
-    "start",
+    "Sleeper",
+    "StreamSinks",
 ]
 
 # ----------------------------------------------------------------------------------------------------
-DEFAULT_TIMEOUT_SECONDS = 300.0  # If timeout seconds is unset, the default timeout is 5 minutes
-TERMINATION_GRACE_SECONDS = (
-    2.0  # After sending SIGTERM, 2 seconds are given for the program to terminate
-)
+# Fallback when a caller passes neither timeout nor deadline.
+# The coordinator always passes its run deadline, so this only bounds direct use of the runner.
+DEFAULT_TIMEOUT_SECONDS = 300.0
+
+# How long a process group gets to exit after SIGTERM before SIGKILL.
+# Short, because graceful shutdown happens earlier (the guest is first asked over SSH to power off),
+# so only children that are already past their deadline or being cleaned up ever receive signals.
+TERMINATION_GRACE_SECONDS = 2.0
+
 # In-memory stdout/stderr capture per stream; live sinks still receive every byte.
 DEFAULT_CAPTURE_LIMIT_BYTES = 1024 * 1024
+
+# Host variables a child may inherit: a minimal login environment (tool lookup, user identity,
+# locale, temporary directory). Everything else is dropped, so credentials such as cloud tokens
+# and loader hooks such as LD_PRELOAD never reach QEMU or ssh. Dropping SSH_AUTH_SOCK also keeps
+# ssh from offering the user's agent keys; it uses only the run's own key.
 DEFAULT_ENV_ALLOWLIST = frozenset(
     {
         "HOME",
@@ -70,7 +86,12 @@ DEFAULT_ENV_ALLOWLIST = frozenset(
 
 # ----------------------------------------------------------------------------------------------------
 class ProcessStartError(CloudBootError):
-    """Raised when a child process cannot be created."""
+    """The child process could not be created at all (missing binary, no permission, bad argv).
+
+    Raised by `CommandRunner.start` when `Popen` itself fails, so no process exists and nothing
+    needs cleaning up. The exit code is always `HOST_UNAVAILABLE` because the usual cause is a
+    host tool that preflight did not catch, such as a binary that exists but cannot run.
+    """
 
     def __init__(
         self,
@@ -78,7 +99,6 @@ class ProcessStartError(CloudBootError):
         *,
         context: Mapping[str, object] | None = None,
         remediation: str | None = None,
-        exit_code: int | ExitCode = ExitCode.HOST_UNAVAILABLE,
     ) -> None:
         super().__init__(
             message,
@@ -86,37 +106,26 @@ class ProcessStartError(CloudBootError):
             phase=ErrorPhase.PROCESS,
             remediation=remediation,
             context=context,
-            exit_code=exit_code,
+            exit_code=ExitCode.HOST_UNAVAILABLE,
         )
-
-
-# ----------------------------------------------------------------------------------------------------
-class ProcessExecutionError(CloudBootError):
-    """Raised when a caller explicitly requires a zero return code."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        returncode: int,
-        context: Mapping[str, object] | None = None,
-        exit_code: int | ExitCode = ExitCode.INTERNAL,
-    ) -> None:
-        merged = dict(context or {})
-        merged["returncode"] = returncode
-        super().__init__(
-            message,
-            code="process-failed",
-            phase=ErrorPhase.PROCESS,
-            context=merged,
-            exit_code=exit_code,
-        )
-        self.returncode = returncode
 
 
 # ----------------------------------------------------------------------------------------------------
 class ProcessTimeoutError(CloudBootError):
-    """Raised after a process deadline and bounded TERM/KILL cleanup."""
+    """A deadline expired before a command finished; callers treat it as "out of time".
+
+    Raised in three situations:
+
+    - `ManagedProcess.wait` reached its deadline. The process group has already received SIGTERM and,
+    if needed, SIGKILL.
+    - `ManagedProcess.stop` sent SIGKILL and the process still had not exited by the deadline. It may
+    still be running, for example while blocked in uninterruptible I/O.
+    - The coordinator refused to start a guest command because the run deadline had already
+      passed. No process exists in this case.
+
+    `result` holds whatever output was captured, or `None` when no process was involved. The
+    exit code is always `ExitCode.TIMEOUT`.
+    """
 
     result: CommandResult | None
 
@@ -139,22 +148,52 @@ class ProcessTimeoutError(CloudBootError):
 
 
 # ----------------------------------------------------------------------------------------------------
-class OutputSink(Protocol):
-    """A destination for bytes read from a child stream."""
+class ByteWriter(Protocol):
+    """Interface for one output destination: anything with a `write(bytes)` method.
+
+    `Sink` is what a single stream accepts (this, a plain callable, or `None`), and
+    `StreamSinks` pairs one `Sink` for stdout with one for stderr. The return type is `object`
+    so both `file.write`, which returns a byte count, and writers that return `None` qualify.
+    """
 
     def write(self, data: bytes) -> object:
         """Consume a chunk of output."""
 
 
-type Sink = OutputSink | Callable[[bytes], object] | None
-type PopenFactory = Callable[..., subprocess.Popen[bytes]]
+# What one stream accepts: a `ByteWriter`, a plain callable such as `file.write`, or `None` to keep
+# only the in-memory capture.
+type Sink = ByteWriter | Callable[[bytes], object] | None
+
+
+class PopenLike(Protocol):
+    """The part of `subprocess.Popen` that `ManagedProcess` uses; test fakes implement only this."""
+
+    @property
+    def pid(self) -> int: ...
+    @property
+    def stdin(self) -> IO[bytes] | None: ...
+    @property
+    def stdout(self) -> IO[bytes] | None: ...
+    @property
+    def stderr(self) -> IO[bytes] | None: ...
+    def poll(self) -> int | None: ...
+    def terminate(self) -> None: ...
+    def kill(self) -> None: ...
+
+
+type PopenFactory = Callable[..., PopenLike]
+# Injected time sources, so tests can drive deadlines without real waiting.
 type Clock = Callable[[], float]
 type Sleeper = Callable[[float], None]
 
 
 # ----------------------------------------------------------------------------------------------------
 class MemorySink:
-    """Thread-safe byte sink useful for callers and tests.
+    """Thread-safe in-memory byte buffer, optionally keeping only the newest `limit` bytes.
+
+    `ManagedProcess` uses one per stream for the output that ends up in `CommandResult`; callers
+    can also pass one as a live sink. The lock is needed because the stream's reader thread
+    writes while another thread may read.
 
     Without a `limit`, every byte is kept. With a `limit`, only the most recent `limit` bytes are
     kept, because the end of a child's output usually explains its failure; older bytes are counted
@@ -192,8 +231,14 @@ class MemorySink:
 
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
-class OutputSinks:
-    """Optional destinations receiving live stdout and stderr bytes."""
+class StreamSinks:
+    """Live destinations for one process: a `Sink` for stdout and one for stderr.
+
+    Bundled into one object so it can pass unchanged through `CommandRunner` down to the stream
+    reader threads. These receive every byte, in addition to the bounded in-memory capture;
+    `None`, the default, means capture only. For example, `vm.py` streams the QEMU serial console
+    to the console log, and `ssh.py` streams a guest file straight to disk.
+    """
 
     stdout: Sink = None
     stderr: Sink = None
@@ -210,6 +255,10 @@ class SinkFailure:
 
     The reader keeps draining the stream after a failure, so the child never blocks on a full pipe
     or receives `SIGPIPE`; only forwarding to the failed sink stops.
+
+    Failures are reported in `CommandResult.sink_failures`, and the caller decides whether they
+    matter: the coordinator logs a console-log failure as a warning, while a guest file copy
+    treats one as a failed copy.
     """
 
     stream: StreamName
@@ -220,13 +269,13 @@ class SinkFailure:
 def _write_sink(sink: Sink, data: bytes) -> None:
     """Forward one chunk of child output to a caller-provided sink.
 
-    A sink is either an object with a `write(byte)` method, such as an open file or
-    :class:`MemorySink`, or a plain callable, such as `list.append`. `None` disables forwarding, and
+    A sink is either an object with a `write(data)` method, such as an open file or
+    `MemorySink`, or a plain callable, such as `list.append`. `None` disables forwarding, and
     any other value is silently ignored. The value returned by the sink is discarded.
 
     This runs on a stream reader thread. A sink shared by stdout and stderr receives writes from two
     threads at once and must be thread-safe. Exceptions raised by the sink propagate to the reader
-    thread, which records them as a :class:`SinkFailure` and stops forwarding to that sink.
+    thread, which records them as a `SinkFailure` and stops forwarding to that sink.
 
     Args:
         sink: Destination for the chunk, or `None` to drop it.
@@ -246,10 +295,22 @@ def _write_sink(sink: Sink, data: bytes) -> None:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class CommandSpec:
-    """Validated command input for :class:`CommandRunner`.
+    """What to run and how, validated on construction so a bad command fails before any process.
 
-    Environment values are merged over the host's allowlisted values.
-    A key outside `env_allowlist` is rejected instead of silently inherited.
+    Fields are normalized: `argv` becomes a tuple, `cwd` a `Path`, and `env` and `env_allowlist`
+    are copied, so the spec cannot change after it is built.
+
+    Args:
+        argv: Program and arguments, passed to the OS without a shell. Empty arguments are allowed
+            (`ssh-keygen -N ""` needs one); NUL bytes and an empty program name are not.
+        cwd: Working directory for the child, or `None` to inherit cloud-boot's.
+        env: Extra variables merged over the inherited host variables. Every key must itself be
+            in `env_allowlist`, so a typo or a secret is rejected instead of silently passed.
+        env_allowlist: Host variables the child may inherit and `env` may set.
+        stdin: Bytes written to the child's stdin, which is then closed; `None` connects stdin to
+            `/dev/null` so a child can never wait for terminal input.
+        name: Short label for diagnostics, such as `"qemu-img"`, used instead of `argv[0]`.
+        capture_limit_bytes: Per-stream in-memory capture limit; see `MemorySink`.
     """
 
     argv: tuple[str, ...]
@@ -303,7 +364,14 @@ class CommandSpec:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class CommandResult:
-    """Observed result of a child process."""
+    """What a finished child process did. Nothing here is interpreted; callers decide meaning.
+
+    `returncode` follows `subprocess`: a negative value means the child was killed by that signal,
+    for example -9 for SIGKILL. `stdout` and `stderr` hold only the newest bytes up to the capture
+    limit; `stdout_dropped_bytes` and `stderr_dropped_bytes` count what was cut, so callers can
+    tell complete output from a tail. `timed_out` is set when cloud-boot had to stop the child at
+    its deadline, even if the child then exited 0. `sink_failures` lists live sinks that failed.
+    """
 
     argv: tuple[str, ...]
     returncode: int
@@ -317,26 +385,8 @@ class CommandResult:
 
     @property
     def succeeded(self) -> bool:
-        """Whether the child exited normally with status zero."""
+        """Whether the child exited 0 on its own, without being stopped at its deadline."""
         return self.returncode == 0 and not self.timed_out
-
-    def check_returncode(self, *, exit_code: int | ExitCode = ExitCode.INTERNAL) -> None:
-        """Raise a typed error if the command did not succeed."""
-        if not self.succeeded:
-            raise ProcessExecutionError(
-                "command exited unsuccessfully",
-                returncode=self.returncode,
-                context={"argv_length": len(self.argv), "timed_out": self.timed_out},
-                exit_code=exit_code,
-            )
-
-
-# ----------------------------------------------------------------------------------------------------
-def deadline_after(seconds: float, *, clock: Clock = time.monotonic) -> float:
-    """Return an absolute monotonic deadline after ``seconds``."""
-    if seconds < 0 or not (seconds < float("inf")):
-        raise ValueError("deadline duration must be finite and non-negative")
-    return clock() + seconds
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -345,8 +395,14 @@ def _resolve_deadline(
     timeout: float | None,
     deadline: float | None,
     clock: Clock,
-    default: float | None,
+    default: float,
 ) -> float:
+    """Turn a relative `timeout` or an absolute `deadline` into one absolute monotonic deadline.
+
+    Exactly one of `timeout` and `deadline` may be given; with neither, `default` seconds from
+    now is used. A deadline already in the past is allowed and simply means "expired". Infinite
+    and NaN values are rejected, so every wait stays bounded.
+    """
     if timeout is not None and deadline is not None:
         raise ValueError("provide either timeout or deadline, not both")
     if timeout is not None:
@@ -357,20 +413,24 @@ def _resolve_deadline(
         if not (deadline < float("inf")):
             raise ValueError("deadline must be finite")
         return deadline
-    if default is None:
-        raise ValueError("a bounded timeout or deadline is required")
     return clock() + default
 
 
 # ----------------------------------------------------------------------------------------------------
 class ManagedProcess:
-    """A started process with bounded waiting and group termination."""
+    """A running child process: bounded waiting, process-group signals, and live output capture.
+
+    Created by `CommandRunner.start`; most callers use `CommandRunner.run` instead and never see
+    one. It is for long-running children such as QEMU, which `vm.py` starts, leaves running, and
+    later stops. Reader threads start on construction, so every instance must end with `wait` or
+    `stop`, which collect the threads and return the `CommandResult`.
+    """
 
     def __init__(
         self,
-        process: subprocess.Popen[bytes],
+        process: PopenLike,
         spec: CommandSpec,
-        sinks: OutputSinks,
+        sinks: StreamSinks,
         *,
         clock: Clock,
         sleeper: Sleeper,
@@ -390,13 +450,16 @@ class ManagedProcess:
         self._stdin_thread: threading.Thread | None = None
         self._sink_failures: list[SinkFailure] = []
         self._sink_failures_lock = threading.Lock()
-        self._start_reader(process.stdout, "stdout", self._stdout, self._stdout_sink)  # thread 1
-        self._start_reader(process.stderr, "stderr", self._stderr, self._stderr_sink)  # thread 2
-        self._start_stdin_writer()  # thread 3, write stdin
+        # Drain stdout and stderr and feed stdin on separate threads from the start. A pipe holds
+        # only a small kernel buffer, so a child writing to an unread pipe, or cloud-boot writing to
+        # an unread stdin, would block forever. The stdin thread exists only when `spec.stdin` is set.
+        self._start_reader(process.stdout, "stdout", self._stdout, self._stdout_sink)
+        self._start_reader(process.stderr, "stderr", self._stderr, self._stderr_sink)
+        self._start_stdin_writer()
 
     @property
     def pid(self) -> int:
-        """Return the child PID."""
+        """Return the child PID, also its process-group ID since the child starts a new session."""
         return self._process.pid
 
     def poll(self) -> int | None:
@@ -420,6 +483,14 @@ class ManagedProcess:
         capture: MemorySink,
         sink: Sink,
     ) -> None:
+        """Start a daemon thread that copies one child stream into `capture` and the live `sink`.
+
+        It uses `read1` when available, which returns as soon as any bytes arrive instead of
+        waiting for a full 64 KiB block, so live sinks such as the console log stay current. Each
+        chunk reaches `capture` first, so the in-memory tail survives a failing sink. The thread
+        ends at EOF, which comes only once every process holding the pipe's write end has exited;
+        `_finish` handles children whose descendants keep it open.
+        """
         if stream is None:
             return
 
@@ -444,12 +515,21 @@ class ManagedProcess:
             finally:
                 stream.close()
 
+        # Daemon, so a reader stuck on a pipe that never reaches EOF cannot keep cloud-boot alive.
         thread = threading.Thread(target=read_stream, name="cloud-boot-output", daemon=True)
         thread.start()
         self._threads.append(thread)
 
     def _start_stdin_writer(self) -> None:
-        if self.spec.stdin is None:
+        """Start a daemon thread that writes `spec.stdin` once and then closes the pipe.
+
+        Closing sends EOF, which is how `sh -s` on the guest knows the script is complete. If the
+        child exits without reading everything, the write fails with `BrokenPipeError` (Python
+        ignores SIGPIPE, so cloud-boot itself is not killed). That is not an error here: the
+        child's exit status already says what happened.
+        """
+        data = self.spec.stdin
+        if data is None:
             return
         stream = self._process.stdin
         if stream is None:
@@ -457,42 +537,50 @@ class ManagedProcess:
 
         def write_stdin() -> None:
             try:
-                stream.write(self.spec.stdin or b"")
+                stream.write(data)
             except (BrokenPipeError, OSError, ValueError):
                 pass
             finally:
                 with contextlib.suppress(OSError, ValueError):
                     stream.close()
 
+        # Daemon, so a write blocked on a child that never reads stdin cannot keep cloud-boot alive.
         thread = threading.Thread(target=write_stdin, name="cloud-boot-stdin", daemon=True)
         thread.start()
         self._stdin_thread = thread
 
     def _signal_group(self, sig: signal.Signals) -> None:
+        """Send `sig` to the child's whole process group, falling back to the child alone.
+
+        The child leads its own session, so its PID is the group ID and `killpg` also reaches
+        anything it spawned, such as a grandchild still holding an output pipe. If the group no
+        longer exists, only the child itself is signalled, which `Popen` ignores once the child has
+        been reaped. Errors are swallowed: signalling is best effort, and callers check the outcome
+        with `poll`.
+
+        POSIX only, like the rest of cloud-boot: Windows would need a Job Object to reach a
+        child's descendants, not a branch here.
+        """
         try:
-            killpg = getattr(os, "killpg", None)
-            if callable(killpg) and os.name == "posix":
-                killpg(self._process.pid, sig)
-            elif sig == signal.SIGTERM:
-                self._process.terminate()
-            else:
-                self._process.kill()
-        except (AttributeError, OSError, ProcessLookupError):
-            try:
-                if sig == signal.SIGTERM:
-                    self._process.terminate()
-                else:
+            os.killpg(self._process.pid, sig)
+        except ProcessLookupError:
+            # The whole group is gone; signal the child alone, which Popen skips once reaped.
+            with contextlib.suppress(OSError):
+                if sig == signal.SIGKILL:
                     self._process.kill()
-            except OSError:
-                pass
+                else:
+                    self._process.terminate()
+        except OSError:
+            # For example EPERM; signalling is best effort and callers check the outcome with poll.
+            pass
 
     def terminate(self) -> None:
-        """Request graceful process-group termination."""
+        """Send SIGTERM to the process group, asking it to exit."""
         self._signal_group(signal.SIGTERM)
 
     def kill(self) -> None:
-        """Force process-group termination."""
-        self._signal_group(cast(signal.Signals, getattr(signal, "SIGKILL", signal.SIGTERM)))
+        """Send SIGKILL to the process group; it cannot be caught or ignored."""
+        self._signal_group(signal.SIGKILL)
 
     def _all_threads(self) -> list[threading.Thread]:
         threads = list(self._threads)
@@ -503,29 +591,38 @@ class ManagedProcess:
     def _threads_alive(self) -> bool:
         return any(thread.is_alive() for thread in self._all_threads())
 
-    def _join_threads(self, deadline: float | None) -> None:
+    def _join_threads(self, deadline: float) -> None:
+        """Wait for every helper thread to end, but never past `deadline`."""
         for thread in self._all_threads():
-            if deadline is None:
-                thread.join(timeout=1.0)
-                continue
             remaining = deadline - self._clock()
             if remaining <= 0:
                 return
             thread.join(timeout=remaining)
 
     def _fallback_returncode(self) -> int:
+        """Return the real exit status if the child has exited, else -SIGKILL as a placeholder.
+
+        Used only when the child survived SIGKILL until the deadline, so the result is always
+        marked `timed_out` and the placeholder is never mistaken for a real status.
+        """
         returncode = self.poll()
         if returncode is not None:
             return returncode
-        return -int(getattr(signal, "SIGKILL", signal.SIGTERM))
+        return -signal.SIGKILL
 
     def _finish(
         self,
         returncode: int,
         *,
         timed_out: bool = False,
-        join_deadline: float | None = None,
+        join_deadline: float,
     ) -> CommandResult:
+        """Collect the helper threads and build the result, never waiting past `join_deadline`.
+
+        Readers still running after the first join mean a descendant still holds an output pipe,
+        so the whole group is killed to release it. Threads still alive at the deadline are left
+        behind (they are daemons), and the result uses whatever output was captured so far.
+        """
         self._join_threads(join_deadline)
         if self._threads_alive():
             self.kill()
@@ -543,6 +640,11 @@ class ManagedProcess:
         )
 
     def _wait_until(self, deadline: float) -> int | None:
+        """Poll until the child exits or `deadline` passes; return its status, or `None` on timeout.
+
+        Polls every 20 ms through the injected clock and sleeper rather than `Popen.wait`, which
+        uses real time, so tests can drive deadlines with a fake clock.
+        """
         while True:
             returncode = self.poll()
             if returncode is not None:
@@ -553,7 +655,16 @@ class ManagedProcess:
             self._sleeper(min(0.02, remaining))
 
     def stop(self, *, timeout: float | None = None, deadline: float | None = None) -> CommandResult:
-        """Stop gracefully, then forcefully, within a hard deadline."""
+        """Stop the process group: SIGTERM first, then SIGKILL if needed, within one deadline.
+
+        The end of the deadline, up to the grace period but never more than half of the time left,
+        is reserved for SIGKILL to take effect; SIGTERM gets the rest. With neither `timeout` nor
+        `deadline`, the grace period plus one second is used.
+
+        Raises:
+            ProcessTimeoutError: If the child is still running at the deadline even after SIGKILL.
+                Its `result` holds the output captured so far.
+        """
         absolute = _resolve_deadline(
             timeout=timeout,
             deadline=deadline,
@@ -561,8 +672,9 @@ class ManagedProcess:
             default=self._termination_grace_seconds + 1.0,
         )
         remaining = max(0.0, absolute - self._clock())
-        termination_window = min(self._termination_grace_seconds, remaining / 2)
-        kill_deadline = absolute - termination_window
+        # Reserve the end of the deadline for SIGKILL; SIGTERM gets the rest.
+        kill_window = min(self._termination_grace_seconds, remaining / 2)
+        kill_deadline = absolute - kill_window
         self.terminate()
         returncode = self._wait_until(kill_deadline)
         if returncode is None:
@@ -582,7 +694,18 @@ class ManagedProcess:
         return self._finish(returncode, join_deadline=absolute)
 
     def wait(self, *, timeout: float | None = None, deadline: float | None = None) -> CommandResult:
-        """Wait for completion; an explicit deadline is a hard cleanup boundary."""
+        """Wait for the child to exit and return its result; on timeout, stop it and raise.
+
+        An explicit `deadline` is a hard boundary: cleanup after a timeout must finish by it too, so
+        an overrunning child gets SIGTERM and SIGKILL with no extra time. A relative `timeout`
+        allows up to twice the grace period of cleanup after it expires. With neither,
+        `DEFAULT_TIMEOUT_SECONDS` applies.
+
+        Raises:
+            ProcessTimeoutError: If the deadline passes first. The process group has been
+                signalled, and `result` holds the output captured before it stopped, marked
+                `timed_out`.
+        """
         absolute = _resolve_deadline(
             timeout=timeout,
             deadline=deadline,
@@ -605,6 +728,9 @@ class ManagedProcess:
                 context={"argv_length": len(self.spec.argv), "pid": self.pid},
                 result=timed_out_result,
             )
+        # The child has exited, but anything it started may still hold the output pipes open. A
+        # command owns its whole group, so nothing it started may outlive it; if no descendant is
+        # left, the group is gone and this does nothing.
         self.terminate()
         cleanup_deadline = self._clock() + self._termination_grace_seconds
         return self._finish(returncode, join_deadline=cleanup_deadline)
@@ -612,7 +738,18 @@ class ManagedProcess:
 
 # ----------------------------------------------------------------------------------------------------
 class CommandRunner:
-    """Create and run commands with injectable time and process boundaries."""
+    """The only way cloud-boot starts host commands; the module docstring lists its guarantees.
+
+    One instance is shared by every component. Time and process creation are injected, so tests
+    can replace `subprocess.Popen` with a fake and drive deadlines with a fake clock.
+
+    Args:
+        clock: Monotonic time source for deadlines.
+        sleeper: Sleep function used while polling.
+        popen_factory: Creates the child process; `subprocess.Popen` in production.
+        default_timeout_seconds: Used by `run` when a caller passes neither timeout nor deadline.
+        termination_grace_seconds: Time a process group gets after SIGTERM before SIGKILL.
+    """
 
     def __init__(
         self,
@@ -632,13 +769,19 @@ class CommandRunner:
         self._termination_grace_seconds = termination_grace_seconds
 
     def _environment(self, spec: CommandSpec) -> dict[str, str]:
+        """Build the child environment: allowlisted host variables, overridden by `spec.env`."""
         environment = {key: value for key, value in os.environ.items() if key in spec.env_allowlist}
         if spec.env:
             environment.update(spec.env)
         return environment
 
-    def start(self, spec: CommandSpec, sinks: OutputSinks | None = None) -> ManagedProcess:
-        """Start one command without waiting for it."""
+    def start(self, spec: CommandSpec, sinks: StreamSinks | None = None) -> ManagedProcess:
+        """Start one command and return it running; the caller must end it with `wait` or `stop`.
+
+        Raises:
+            ProcessStartError: If the OS cannot create the process, for example because the
+                program is missing or not executable.
+        """
         try:
             process = self._popen_factory(
                 list(spec.argv),
@@ -648,7 +791,9 @@ class CommandRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-                start_new_session=(os.name == "posix"),
+                # Own session and process group: `_signal_group` relies on the PID being the group
+                # ID, and a terminal Ctrl-C reaches cloud-boot instead of the child.
+                start_new_session=True,
             )
         except (OSError, ValueError) as exc:
             raise ProcessStartError(
@@ -662,7 +807,7 @@ class CommandRunner:
         return ManagedProcess(
             process,
             spec,
-            sinks or OutputSinks(),
+            sinks or StreamSinks(),
             clock=self._clock,
             sleeper=self._sleeper,
             termination_grace_seconds=self._termination_grace_seconds,
@@ -674,31 +819,15 @@ class CommandRunner:
         *,
         timeout: float | None = None,
         deadline: float | None = None,
-        sinks: OutputSinks | None = None,
+        sinks: StreamSinks | None = None,
     ) -> CommandResult:
-        """Start and wait for one command within a bounded deadline."""
-        process = self.start(spec, sinks)
+        """Run one command to completion within a bounded time and return its result.
+
+        Raises:
+            ProcessStartError: If the command cannot be started.
+            ProcessTimeoutError: If it does not finish in time; see `ManagedProcess.wait`.
+        """
         if timeout is None and deadline is None:
             timeout = self._default_timeout_seconds
+        process = self.start(spec, sinks)
         return process.wait(timeout=timeout, deadline=deadline)
-
-
-# ----------------------------------------------------------------------------------------------------
-_DEFAULT_RUNNER = CommandRunner()
-
-
-def start(spec: CommandSpec, sinks: OutputSinks | None = None) -> ManagedProcess:
-    """Start a command using the default runner."""
-    return _DEFAULT_RUNNER.start(spec, sinks)
-
-
-# ----------------------------------------------------------------------------------------------------
-def run(
-    spec: CommandSpec,
-    *,
-    timeout: float | None = None,
-    deadline: float | None = None,
-    sinks: OutputSinks | None = None,
-) -> CommandResult:
-    """Run a command using the default runner."""
-    return _DEFAULT_RUNNER.run(spec, timeout=timeout, deadline=deadline, sinks=sinks)

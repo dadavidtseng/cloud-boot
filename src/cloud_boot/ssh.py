@@ -12,7 +12,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -23,8 +23,9 @@ from .process import (
     CommandResult,
     CommandRunner,
     CommandSpec,
-    OutputSinks,
     ProcessTimeoutError,
+    Sleeper,
+    StreamSinks,
 )
 
 # ----------------------------------------------------------------------------------------------------
@@ -59,8 +60,6 @@ _READY_ATTEMPT_SLACK_SECONDS = 10.0
 _STDERR_CONTEXT_BYTES = 2048
 _COPY_CAPTURE_LIMIT_BYTES = 64 * 1024
 _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-
-type Sleeper = Callable[[float], None]
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -376,7 +375,7 @@ class SshTransport:
                     b'exec cat -- "$1"',
                     (remote,),
                     timeout=timeout,
-                    sinks=OutputSinks(stdout=stream.write),
+                    sinks=StreamSinks(stdout=stream.write),
                     # The limit covers both streams; keep enough for the guest's stderr.
                     capture_limit_bytes=_COPY_CAPTURE_LIMIT_BYTES,
                 )
@@ -426,7 +425,7 @@ class SshTransport:
         args: Sequence[str],
         *,
         timeout: float,
-        sinks: OutputSinks | None = None,
+        sinks: StreamSinks | None = None,
         capture_limit_bytes: int = DEFAULT_CAPTURE_LIMIT_BYTES,
     ) -> CommandResult:
         if isinstance(args, str):

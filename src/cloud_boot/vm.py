@@ -23,13 +23,14 @@ from .errors import CloudBootError, ErrorPhase, ExitCode
 from .image_store import VerifiedImage
 from .models import ResourceSpec
 from .process import (
+    ByteWriter,
     Clock,
     CommandResult,
     CommandRunner,
     CommandSpec,
     ManagedProcess,
-    OutputSink,
-    OutputSinks,
+    Sleeper,
+    StreamSinks,
 )
 
 # ----------------------------------------------------------------------------------------------------
@@ -66,9 +67,8 @@ _STDERR_CONTEXT_BYTES = 2048
 _PORT_CONFLICT_MARKER = b"Could not set up host forwarding rule"
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-type ConsoleSink = OutputSink | Callable[[bytes], object]
+type ConsoleSink = ByteWriter | Callable[[bytes], object]
 type PortAllocator = Callable[[], int]
-type Sleeper = Callable[[float], None]
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -342,7 +342,7 @@ class QemuBackend:
             argv = build_qemu_argv(spec, port, qemu_binary=self._qemu_binary)
             process = self._runner.start(
                 CommandSpec(argv, name="qemu", capture_limit_bytes=CONSOLE_CAPTURE_LIMIT_BYTES),
-                OutputSinks(stdout=spec.console),
+                StreamSinks(stdout=spec.console),
             )
             try:
                 early_exit = self._await_startup(process)

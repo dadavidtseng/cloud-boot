@@ -21,7 +21,7 @@ from .coordinator import (
     default_cache_dir,
     production_dependencies,
 )
-from .errors import CloudBootError, ExitCode
+from .errors import CloudBootError, ErrorPhase, ExitCode
 from .scenario import LoadedScenario, ScenarioValidationError, load_scenario
 
 # ----------------------------------------------------------------------------------------------------
@@ -130,7 +130,7 @@ def main(
             args.scenario, out, err, environ if environ is not None else os.environ, runner_factory
         )
     except Exception as error:
-        err.write(f"ERROR internal: unexpected {type(error).__name__}: {error}\n")
+        err.write(f"ERROR {ErrorPhase.INTERNAL}: unexpected {type(error).__name__}: {error}\n")
         return int(ExitCode.INTERNAL)
 
 
@@ -145,7 +145,7 @@ def _run(
     try:
         loaded = load_scenario(scenario)
     except ScenarioValidationError as error:
-        err.write(f"ERROR validation: {error}\n")
+        err.write(f"ERROR {ErrorPhase.VALIDATION}: {error}\n")
         return int(ExitCode.VALIDATION)
 
     def progress(phase: str, message: str) -> None:

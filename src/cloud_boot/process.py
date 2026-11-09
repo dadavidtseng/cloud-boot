@@ -704,7 +704,8 @@ class ManagedProcess:
         Raises:
             ProcessTimeoutError: If the deadline passes first. The process group has been
                 signalled, and `result` holds the output captured before it stopped, marked
-                `timed_out`.
+                `timed_out`. `context["survived_sigkill"]` is true when the child may still be
+                running.
         """
         absolute = _resolve_deadline(
             timeout=timeout,
@@ -718,14 +719,20 @@ class ManagedProcess:
                 absolute if deadline is not None else absolute + 2 * self._termination_grace_seconds
             )
             timed_out_result: CommandResult | None
+            survived_sigkill = False
             try:
                 timed_out_result = self.stop(deadline=cleanup_deadline)
             except ProcessTimeoutError as exc:
                 timed_out_result = exc.result
+                survived_sigkill = True
             if timed_out_result is not None:
                 timed_out_result = replace(timed_out_result, timed_out=True)
             raise ProcessTimeoutError(
-                context={"argv_length": len(self.spec.argv), "pid": self.pid},
+                context={
+                    "argv_length": len(self.spec.argv),
+                    "pid": self.pid,
+                    "survived_sigkill": survived_sigkill,
+                },
                 result=timed_out_result,
             )
         # The child has exited, but anything it started may still hold the output pipes open. A
@@ -760,8 +767,9 @@ class CommandRunner:
         default_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         termination_grace_seconds: float = TERMINATION_GRACE_SECONDS,
     ) -> None:
-        if default_timeout_seconds <= 0 or termination_grace_seconds <= 0:
-            raise ValueError("process timeouts must be positive")
+        for value in (default_timeout_seconds, termination_grace_seconds):
+            if not 0 < value < float("inf"):
+                raise ValueError("process timeouts must be positive and finite")
         self._clock = clock
         self._sleeper = sleeper
         self._popen_factory = popen_factory
@@ -826,8 +834,11 @@ class CommandRunner:
         Raises:
             ProcessStartError: If the command cannot be started.
             ProcessTimeoutError: If it does not finish in time; see `ManagedProcess.wait`.
+            ValueError: For an invalid `timeout` or `deadline`, before anything is started.
         """
         if timeout is None and deadline is None:
             timeout = self._default_timeout_seconds
+        # Validate before starting, so a bad timeout or deadline cannot leave a child running.
+        _resolve_deadline(timeout=timeout, deadline=deadline, clock=self._clock, default=0.0)
         process = self.start(spec, sinks)
         return process.wait(timeout=timeout, deadline=deadline)

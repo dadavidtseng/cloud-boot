@@ -358,9 +358,61 @@ def test_timeout_error_retains_timed_out_result() -> None:
         process.wait(timeout=0.1)
 
     assert caught.value.result is not None
+    assert caught.value.context["survived_sigkill"] is False
     assert caught.value.result.timed_out
     assert caught.value.result.stdout == b"partial stdout"
     assert caught.value.result.stderr == b"partial stderr"
+
+
+def test_run_rejects_an_unbounded_timeout_before_starting_anything() -> None:
+    started: list[object] = []
+
+    def factory(*args: object, **_kwargs: object) -> _FakeProcess:
+        started.append(args)
+        return _FakeProcess(exits_after_kill=True)
+
+    runner = CommandRunner(popen_factory=factory)
+
+    with pytest.raises(ValueError, match="timeout must be finite"):
+        runner.run(CommandSpec(("fake-command",)), timeout=float("inf"))
+
+    assert started == []
+
+
+@pytest.mark.parametrize("value", [0.0, float("inf"), float("nan")])
+def test_runner_rejects_invalid_time_settings(value: float) -> None:
+    with pytest.raises(ValueError, match="positive and finite"):
+        CommandRunner(default_timeout_seconds=value)
+    with pytest.raises(ValueError, match="positive and finite"):
+        CommandRunner(termination_grace_seconds=value)
+
+
+def test_wait_timeout_reports_a_child_that_survives_sigkill() -> None:
+    fake = _FakeProcess(exits_after_kill=False)
+    current = 0.0
+
+    def clock() -> float:
+        return current
+
+    def sleeper(duration: float) -> None:
+        nonlocal current
+        current += duration
+
+    runner = CommandRunner(
+        clock=clock,
+        sleeper=sleeper,
+        popen_factory=lambda *_args, **_kwargs: fake,
+        termination_grace_seconds=0.01,
+    )
+    process = runner.start(CommandSpec(("fake-command",)))
+
+    with pytest.raises(ProcessTimeoutError) as caught:
+        process.wait(timeout=0.1)
+
+    assert fake.killed
+    assert caught.value.context["survived_sigkill"] is True
+    assert caught.value.result is not None
+    assert caught.value.result.timed_out
 
 
 def test_callable_sinks_receive_output() -> None:

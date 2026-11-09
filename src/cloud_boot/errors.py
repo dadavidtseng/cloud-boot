@@ -89,16 +89,3 @@ class CloudBootError(Exception):
         self.remediation = remediation
         self.context = dict(context or {})
         self.exit_code = int(exit_code)
-
-    def as_dict(self) -> dict[str, object]:
-        """Return the stable shape used by reports and CLI adapters."""
-        result: dict[str, object] = {
-            "code": self.code,
-            "phase": self.phase,
-            "message": self.message,
-            "exit_code": self.exit_code,
-            "context": dict(self.context),
-        }
-        if self.remediation is not None:
-            result["remediation"] = self.remediation
-        return result

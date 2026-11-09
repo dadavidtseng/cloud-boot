@@ -415,11 +415,11 @@ def test_empty_arguments_reach_the_child_unchanged() -> None:
 
 
 def test_execution_error_records_returncode_in_context() -> None:
-    serialized = ProcessExecutionError("failed", returncode=3).as_dict()
+    error = ProcessExecutionError("failed", returncode=3)
 
-    assert serialized["phase"] == "process"
-    assert serialized["context"] == {"returncode": 3}
-    assert "remediation" not in serialized
+    assert error.phase == "process"
+    assert error.context == {"returncode": 3}
+    assert error.remediation is None
 
 
 def test_deadline_helpers_reject_unbounded_values() -> None:

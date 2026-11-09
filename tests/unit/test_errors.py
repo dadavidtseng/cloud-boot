@@ -1,5 +1,10 @@
+# ----------------------------------------------------------------------------------------------------
+# test_errors.py
+# ----------------------------------------------------------------------------------------------------
+
 """Unit tests for the shared cloud-boot error contract."""
 
+# ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import pytest
@@ -7,12 +12,14 @@ import pytest
 from cloud_boot.errors import CloudBootError, ExitCode
 
 
+# ----------------------------------------------------------------------------------------------------
 def test_cloud_boot_error_rejects_unknown_phase() -> None:
     with pytest.raises(ValueError, match="unknown error phase"):
         CloudBootError("invalid", phase="not-a-phase")
 
 
-def test_cloud_boot_error_serializes_stable_shape() -> None:
+# ----------------------------------------------------------------------------------------------------
+def test_cloud_boot_error_stores_normalized_fields() -> None:
     context = {"pid": 42}
     error = CloudBootError(
         "image digest mismatch",
@@ -24,20 +31,21 @@ def test_cloud_boot_error_serializes_stable_shape() -> None:
     )
     context["pid"] = 0
 
-    assert error.as_dict() == {
-        "code": "image-digest-mismatch",
-        "phase": "preparation",
-        "message": "image digest mismatch",
-        "exit_code": 4,
-        "context": {"pid": 42},
-        "remediation": "Delete the cached image and retry.",
-    }
-    assert type(error.as_dict()["exit_code"]) is int
+    assert error.code == "image-digest-mismatch"
+    assert error.phase == "preparation"
+    assert error.message == "image digest mismatch"
+    assert error.remediation == "Delete the cached image and retry."
+    assert error.context == {"pid": 42}
+    assert error.exit_code == 4
+    assert type(error.phase) is str
+    assert type(error.exit_code) is int
 
 
-def test_cloud_boot_error_omits_missing_remediation() -> None:
-    serialized = CloudBootError("failed").as_dict()
+# ----------------------------------------------------------------------------------------------------
+def test_cloud_boot_error_defaults_to_internal() -> None:
+    error = CloudBootError("failed")
 
-    assert "remediation" not in serialized
-    assert serialized["phase"] == "internal"
-    assert serialized["exit_code"] == ExitCode.INTERNAL
+    assert error.code == "internal-error"
+    assert error.phase == "internal"
+    assert error.remediation is None
+    assert error.exit_code == ExitCode.INTERNAL

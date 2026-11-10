@@ -55,6 +55,11 @@ type Identifier = Annotated[
 # A strict integer that is >= 1 and <= 3600 (one hour) used for timeout fields.
 type PositiveTimeout = Annotated[StrictInt, Field(ge=1, le=3600)]
 
+# A DNS host name (RFC 1123): dot-separated labels of 1-63 letters, digits, or hyphens, each
+# starting and ending with a letter or digit. The 253-character total is checked separately.
+_HOSTNAME_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME_PATTERN = rf"^{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})*$"
+
 
 # -----------------------------------------------------------------------------
 class StrictModel(BaseModel):
@@ -153,7 +158,7 @@ class SeedSpec(StrictModel):
             Field(
                 min_length=1,
                 max_length=253,
-                pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$",
+                pattern=_HOSTNAME_PATTERN,
             ),
         ]
         | None

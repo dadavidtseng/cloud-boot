@@ -9,6 +9,7 @@ Tests for strict Milestone 0 scenario loading.
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -359,3 +360,34 @@ def test_rejects_content_expectation_for_absent_file(tmp_path: Path) -> None:
 
     assert "$.assertions[1].file" in str(raised.value)
     assert "content_contains cannot be used when exists is false" in str(raised.value)
+
+
+def with_hostname(tmp_path: Path, hostname: str) -> Path:
+    # JSON quoting is valid YAML and keeps values such as "-a" or ".a" plain strings.
+    return write_scenario(
+        tmp_path,
+        VALID_SCENARIO.replace(
+            "local_hostname: basic-boot", f"local_hostname: {json.dumps(hostname)}"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    ["basic-boot", "a", "Host-1.example.com", "a" * 63, ".".join(["a" * 63] * 3)],
+)
+def test_accepts_dns_host_names(tmp_path: Path, hostname: str) -> None:
+    loaded = load_scenario(with_hostname(tmp_path, hostname))
+
+    assert loaded.scenario.seed.local_hostname == hostname
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    ["my..host", "a.-b.c", "a-.b", "-a", "a.", ".a", "a" * 64, "ok." + "a" * 64, "under_score"],
+)
+def test_rejects_invalid_host_names(tmp_path: Path, hostname: str) -> None:
+    with pytest.raises(ScenarioValidationError) as raised:
+        load_scenario(with_hostname(tmp_path, hostname))
+
+    assert "$.seed.local_hostname" in str(raised.value)

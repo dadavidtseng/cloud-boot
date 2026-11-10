@@ -391,3 +391,26 @@ def test_rejects_invalid_host_names(tmp_path: Path, hostname: str) -> None:
         load_scenario(with_hostname(tmp_path, hostname))
 
     assert "$.seed.local_hostname" in str(raised.value)
+
+
+def with_package(tmp_path: Path, name: str) -> Path:
+    return write_scenario(
+        tmp_path, VALID_SCENARIO.replace("name: openssh-server", f"name: {json.dumps(name)}")
+    )
+
+
+@pytest.mark.parametrize("name", ["xz", "libc6", "g++", "python3.12"])
+def test_accepts_debian_package_names(tmp_path: Path, name: str) -> None:
+    loaded = load_scenario(with_package(tmp_path, name))
+
+    package = loaded.scenario.assertions[2]
+    assert isinstance(package, PackageInstalledAssertion)
+    assert package.name == name
+
+
+@pytest.mark.parametrize("name", ["a", "Uppercase", "-dash", "has space", "pkg:amd64"])
+def test_rejects_invalid_debian_package_names(tmp_path: Path, name: str) -> None:
+    with pytest.raises(ScenarioValidationError) as raised:
+        load_scenario(with_package(tmp_path, name))
+
+    assert "$.assertions[2].package-installed.name" in str(raised.value)

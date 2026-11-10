@@ -233,7 +233,7 @@ class PackageInstalledAssertion(AssertionBase):
     type: Literal["package-installed"]
     name: Annotated[
         StrictStr,
-        Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9+.-]*$"),
+        Field(min_length=2, max_length=128, pattern=r"^[a-z0-9][a-z0-9+.-]*$"),
     ]
 
 

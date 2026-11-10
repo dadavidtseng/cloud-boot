@@ -98,10 +98,10 @@ class RunWorkspace:
         runs = Path(artifact_root) / RUNS_DIRNAME
         try:
             runs.mkdir(mode=DIRECTORY_MODE, parents=True, exist_ok=True)
-        except OSError as error:
+        except OSError as e:
             raise ArtifactError(
                 "cannot create the runs directory", context={"path": str(runs)}
-            ) from error
+            ) from e
         if runs.is_symlink() or not runs.is_dir():
             raise ArtifactError(
                 "the runs directory must be a real directory", context={"path": str(runs)}
@@ -112,10 +112,10 @@ class RunWorkspace:
                 os.mkdir(path, DIRECTORY_MODE)
             except FileExistsError:
                 continue
-            except OSError as error:
+            except OSError as e:
                 raise ArtifactError(
                     "cannot create the run directory", context={"path": str(path)}
-                ) from error
+                ) from e
             # mkdir applies the umask; set the mode explicitly.
             os.chmod(path, DIRECTORY_MODE)
             workspace = cls(path)
@@ -180,10 +180,10 @@ class RunWorkspace:
                 os.chmod(current, DIRECTORY_MODE)
             except FileExistsError:
                 pass
-            except OSError as error:
+            except OSError as e:
                 raise ArtifactError(
                     "cannot create an artifact directory", context={"path": str(current)}
-                ) from error
+                ) from e
             if current.is_symlink() or not current.is_dir():
                 raise ValueError(f"artifact directory is not a real directory: {relative!r}")
         return current
@@ -200,10 +200,8 @@ class RunWorkspace:
             descriptor = os.open(
                 path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, FILE_MODE
             )
-        except OSError as error:
-            raise ArtifactError(
-                "cannot create an artifact file", context={"path": relative}
-            ) from error
+        except OSError as e:
+            raise ArtifactError("cannot create an artifact file", context={"path": relative}) from e
         return os.fdopen(descriptor, "wb")
 
     def write_bytes(self, relative: str, data: bytes) -> Path:
@@ -215,10 +213,8 @@ class RunWorkspace:
         try:
             with self.open_new(relative) as stream:
                 stream.write(data)
-        except OSError as error:
-            raise ArtifactError(
-                "cannot write an artifact file", context={"path": relative}
-            ) from error
+        except OSError as e:
+            raise ArtifactError("cannot write an artifact file", context={"path": relative}) from e
         return self.artifact_path(relative)
 
     def write_text_atomic(self, relative: str, text: str) -> Path:
@@ -241,10 +237,8 @@ class RunWorkspace:
             os.replace(temporary, path)
             temporary = None
             _sync_directory(path.parent)
-        except OSError as error:
-            raise ArtifactError(
-                "cannot write an artifact file", context={"path": relative}
-            ) from error
+        except OSError as e:
+            raise ArtifactError("cannot write an artifact file", context={"path": relative}) from e
         finally:
             if temporary is not None:
                 with contextlib.suppress(FileNotFoundError):

@@ -508,9 +508,9 @@ class ManagedProcess:
                         continue
                     try:
                         _write_sink(forward, chunk)
-                    except Exception as error:
+                    except Exception as e:
                         # Keep draining: closing the pipe early would SIGPIPE or block the child.
-                        self._record_sink_failure(name, error)
+                        self._record_sink_failure(name, e)
                         forward = None
             finally:
                 stream.close()
@@ -722,8 +722,8 @@ class ManagedProcess:
             survived_sigkill = False
             try:
                 timed_out_result = self.stop(deadline=cleanup_deadline)
-            except ProcessTimeoutError as exc:
-                timed_out_result = exc.result
+            except ProcessTimeoutError as e:
+                timed_out_result = e.result
                 survived_sigkill = True
             if timed_out_result is not None:
                 timed_out_result = replace(timed_out_result, timed_out=True)
@@ -803,7 +803,7 @@ class CommandRunner:
                 # ID, and a terminal Ctrl-C reaches cloud-boot instead of the child.
                 start_new_session=True,
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError) as e:
             raise ProcessStartError(
                 "unable to start host command",
                 context={
@@ -811,7 +811,7 @@ class CommandRunner:
                     "environment_keys": sorted(spec.env or {}),
                 },
                 remediation="Install the required host command and verify its path and permissions.",
-            ) from exc
+            ) from e
         return ManagedProcess(
             process,
             spec,

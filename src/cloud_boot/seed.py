@@ -140,10 +140,10 @@ def build_seed(
     try:
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=".seed-", suffix=".iso", dir=destination)
-    except OSError as error:
+    except OSError as e:
         raise SeedBuildError(
             "cannot create the seed output directory", context={"path": str(destination)}
-        ) from error
+        ) from e
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w+b") as stream:
@@ -154,10 +154,8 @@ def build_seed(
             _verify_iso(contents, stream)
         final_path = destination / SEED_FILENAME
         os.replace(temporary_path, final_path)
-    except OSError as error:
-        raise SeedBuildError(
-            "cannot write the seed ISO", context={"path": str(destination)}
-        ) from error
+    except OSError as e:
+        raise SeedBuildError("cannot write the seed ISO", context={"path": str(destination)}) from e
     finally:
         with contextlib.suppress(FileNotFoundError):
             temporary_path.unlink()
@@ -222,8 +220,8 @@ def _read_payload_file(field: str, relative: str, scenario_dir: Path) -> bytes:
     try:
         root = scenario_dir.resolve(strict=True)
         candidate = (root / relative).resolve(strict=True)
-    except OSError as error:
-        raise SeedBuildError(f"cannot read {field} payload file", context=context) from error
+    except OSError as e:
+        raise SeedBuildError(f"cannot read {field} payload file", context=context) from e
     if not candidate.is_relative_to(root):
         raise SeedBuildError(
             f"{field} payload file resolves outside the scenario directory", context=context
@@ -234,8 +232,8 @@ def _read_payload_file(field: str, relative: str, scenario_dir: Path) -> bytes:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise SeedBuildError(f"{field} payload is not a regular file", context=context)
             return stream.read(MAX_PAYLOAD_BYTES + 1)
-    except OSError as error:
-        raise SeedBuildError(f"cannot read {field} payload file", context=context) from error
+    except OSError as e:
+        raise SeedBuildError(f"cannot read {field} payload file", context=context) from e
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -252,8 +250,8 @@ def _write_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
                 joliet_path=f"/{name}",
             )
         iso.write_fp(stream)
-    except PyCdlibException as error:
-        raise SeedBuildError("cannot build the seed ISO") from error
+    except PyCdlibException as e:
+        raise SeedBuildError("cannot build the seed ISO") from e
     finally:
         iso.close()
 
@@ -289,8 +287,8 @@ def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
                 raise SeedBuildError(
                     "seed ISO content does not match its input", context={"file": name}
                 )
-    except PyCdlibException as error:
-        raise SeedBuildError("cannot reopen the seed ISO for verification") from error
+    except PyCdlibException as e:
+        raise SeedBuildError("cannot reopen the seed ISO for verification") from e
     finally:
         with contextlib.suppress(PyCdlibException):
             iso.close()

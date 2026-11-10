@@ -121,13 +121,13 @@ def _construct_unique_mapping(
         key = loader.construct_object(key_node, deep=deep)
         try:
             hash(key)
-        except TypeError as error:
+        except TypeError as e:
             raise ConstructorError(
                 "while constructing a mapping",
                 node.start_mark,
                 "found an unhashable key",
                 key_node.start_mark,
-            ) from error
+            ) from e
         hashable_key = cast(Hashable, key)
         if hashable_key in mapping:
             raise ConstructorError(
@@ -241,10 +241,8 @@ def _read_scenario(path: Path) -> str:
     try:
         with path.open("rb") as stream:
             document = stream.read(MAX_SCENARIO_BYTES + 1)
-    except OSError as error:
-        raise ScenarioValidationError(
-            [ScenarioIssue(("source",), f"cannot read {path}: {error}")]
-        ) from error
+    except OSError as e:
+        raise ScenarioValidationError([ScenarioIssue(("source",), f"cannot read {path}: {e}")]) from e
 
     if len(document) > MAX_SCENARIO_BYTES:
         raise ScenarioValidationError(
@@ -257,15 +255,15 @@ def _read_scenario(path: Path) -> str:
         )
     try:
         return document.decode("utf-8")
-    except UnicodeDecodeError as error:
+    except UnicodeDecodeError as e:
         raise ScenarioValidationError(
             [
                 ScenarioIssue(
                     ("source",),
-                    f"scenario must be UTF-8 (invalid byte at offset {error.start})",
+                    f"scenario must be UTF-8 (invalid byte at offset {e.start})",
                 )
             ]
-        ) from error
+        ) from e
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -281,8 +279,8 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
     try:
         # SafeLoader subclass adds duplicate-key checks and alias/depth limits.
         raw = yaml.load(document, Loader=_StrictSafeLoader)  # noqa: S506
-    except yaml.YAMLError as error:
-        raise ScenarioValidationError([_yaml_issue(error)]) from error
+    except yaml.YAMLError as e:
+        raise ScenarioValidationError([_yaml_issue(e)]) from e
 
     if not isinstance(raw, dict):
         raise ScenarioValidationError([ScenarioIssue((), "document root must be a mapping")])
@@ -304,8 +302,8 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
 
     try:
         scenario = ScenarioV1.model_validate(raw)
-    except ValidationError as error:
-        raise ScenarioValidationError(_pydantic_issues(error)) from error
+    except ValidationError as e:
+        raise ScenarioValidationError(_pydantic_issues(e)) from e
 
     containment_issues = _validate_payload_containment(scenario, source_path.parent)
     if containment_issues:

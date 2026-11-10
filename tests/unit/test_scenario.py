@@ -263,8 +263,8 @@ def test_rejects_symlink_that_resolves_outside_scenario_directory(
     link = tmp_path / "user-data-link"
     try:
         link.symlink_to(outside)
-    except OSError as error:
-        pytest.skip(f"symlink creation unavailable: {error}")
+    except OSError as e:
+        pytest.skip(f"symlink creation unavailable: {e}")
     source = write_scenario(
         tmp_path,
         """\

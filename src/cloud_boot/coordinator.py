@@ -333,8 +333,8 @@ class RunCoordinator:
             self._progress("preflight", "checking host commands and KVM access")
             self._deps.preflight()
             workspace = self._deps.create_workspace()
-        except CloudBootError as error:
-            return RunResult(error.exit_code, "error", None, None, error)
+        except CloudBootError as e:
+            return RunResult(e.exit_code, "error", None, None, e)
         self._progress("workspace", f"writing evidence to {workspace.path}")
         started_at = self._deps.wall_clock()
         started = self._deps.clock()
@@ -343,12 +343,12 @@ class RunCoordinator:
         try:
             with contextlib.ExitStack() as cleanup:
                 self._execute(loaded, workspace, state, cleanup)
-        except CloudBootError as error:
-            failure = error
+        except CloudBootError as e:
+            failure = e
         except KeyboardInterrupt:
             failure = RunInterruptedError()
-        except Exception as error:
-            failure = UnexpectedRunError(error)
+        except Exception as e:
+            failure = UnexpectedRunError(e)
         state.warnings.extend(workspace.cleanup_transient())
         return self._finish(loaded, workspace, state, failure, started_at, started)
 
@@ -408,9 +408,9 @@ class RunCoordinator:
         self._progress("ssh", f"waiting for SSH on {handle.ssh_host}:{handle.ssh_port}")
         try:
             guest.wait_ready(deadline=run_deadline)
-        except SshTransportError as error:
+        except SshTransportError as e:
             state.assertions = block_all(
-                plan.assertions, boot=plan.name, reason=f"SSH never became ready: {error.message}"
+                plan.assertions, boot=plan.name, reason=f"SSH never became ready: {e.message}"
             )
             raise
         session["ready"] = guest
@@ -419,14 +419,14 @@ class RunCoordinator:
         self._progress("cloud-init", "waiting for cloud-init to finish")
         try:
             capped.execute(CLOUD_INIT_WAIT_SCRIPT, (), timeout=float(scenario.timeout_seconds))
-        except ProcessTimeoutError as error:
+        except ProcessTimeoutError as e:
             raise RunTimeoutError(
                 "the run reached its time limit while waiting for cloud-init",
                 context={"timeout_seconds": scenario.timeout_seconds},
-            ) from error
-        except SshTransportError as error:
+            ) from e
+        except SshTransportError as e:
             state.assertions = block_all(
-                plan.assertions, boot=plan.name, reason=f"SSH transport unavailable: {error.message}"
+                plan.assertions, boot=plan.name, reason=f"SSH transport unavailable: {e.message}"
             )
             raise
 
@@ -452,21 +452,21 @@ class RunCoordinator:
             self._progress("shutdown", "asking the guest to power off")
             try:
                 guest.shutdown(timeout=SHUTDOWN_REQUEST_TIMEOUT_SECONDS)
-            except CloudBootError as error:
-                state.warnings.append(f"guest shutdown request failed: {error.message}")
+            except CloudBootError as e:
+                state.warnings.append(f"guest shutdown request failed: {e.message}")
         self._progress("shutdown", "stopping QEMU")
         try:
             stopped = self._deps.vm_backend.stop(handle, deadline=self._after(STOP_TIMEOUT_SECONDS))
-        except CloudBootError as error:
-            state.warnings.append(f"QEMU did not stop cleanly: {error.message}")
+        except CloudBootError as e:
+            state.warnings.append(f"QEMU did not stop cleanly: {e.message}")
             return
         state.stop_reason = str(stopped.reason)
         for failure in stopped.result.sink_failures:
             state.warnings.append(f"console log {failure.stream} write failed: {failure.error}")
         try:
             workspace.write_bytes(f"{boot_dir}/qemu.stderr.log", stopped.result.stderr)
-        except ArtifactError as error:
-            state.warnings.append(f"could not save QEMU stderr: {error.message}")
+        except ArtifactError as e:
+            state.warnings.append(f"could not save QEMU stderr: {e.message}")
 
     def _collect(
         self, guest: GuestSession, workspace: RunWorkspace, boot_dir: str, state: _RunState
@@ -479,8 +479,8 @@ class RunCoordinator:
                     workspace.artifact_path(f"{boot_dir}/{name}"),
                     timeout=COLLECTION_TIMEOUT_SECONDS,
                 )
-            except CloudBootError as error:
-                state.warnings.append(f"could not collect {remote}: {error.message}")
+            except CloudBootError as e:
+                state.warnings.append(f"could not collect {remote}: {e.message}")
                 continue
             if result.exit_status != 0:
                 detail = result.stderr.decode("utf-8", errors="replace").strip()
@@ -528,11 +528,9 @@ class RunCoordinator:
         self._progress("report", f"{outcome} (exit code {exit_code})")
         try:
             report_path = write_report(workspace, report)
-        except ArtifactError as error:
+        except ArtifactError as e:
             # Never report success without persisted evidence.
-            return RunResult(
-                error.exit_code, "error", workspace.path, None, error, tuple(state.assertions)
-            )
+            return RunResult(e.exit_code, "error", workspace.path, None, e, tuple(state.assertions))
         return RunResult(
             exit_code, outcome, workspace.path, report_path, failure, tuple(state.assertions)
         )

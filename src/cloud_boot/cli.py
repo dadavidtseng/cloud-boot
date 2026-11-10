@@ -129,8 +129,8 @@ def main(
         return _run(
             args.scenario, out, err, environ if environ is not None else os.environ, runner_factory
         )
-    except Exception as error:
-        err.write(f"ERROR {ErrorPhase.INTERNAL}: unexpected {type(error).__name__}: {error}\n")
+    except Exception as e:
+        err.write(f"ERROR {ErrorPhase.INTERNAL}: unexpected {type(e).__name__}: {e}\n")
         return int(ExitCode.INTERNAL)
 
 
@@ -144,8 +144,8 @@ def _run(
 ) -> int:
     try:
         loaded = load_scenario(scenario)
-    except ScenarioValidationError as error:
-        err.write(f"ERROR {ErrorPhase.VALIDATION}: {error}\n")
+    except ScenarioValidationError as e:
+        err.write(f"ERROR {ErrorPhase.VALIDATION}: {e}\n")
         return int(ExitCode.VALIDATION)
 
     def progress(phase: str, message: str) -> None:

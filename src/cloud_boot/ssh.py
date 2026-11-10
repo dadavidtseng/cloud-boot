@@ -197,9 +197,9 @@ def create_access_identity(
         os.chmod(private_key, 0o600)
         public_key = public_key_path.read_text(encoding="ascii").strip()
         known_hosts.touch(mode=0o600, exist_ok=False)
-    except (OSError, UnicodeDecodeError) as error:
+    except (OSError, UnicodeDecodeError) as e:
         discard_keys()
-        raise AccessKeyError("cannot finish the run key", context={"path": str(directory)}) from error
+        raise AccessKeyError("cannot finish the run key", context={"path": str(directory)}) from e
     if "\n" in public_key or not public_key.startswith("ssh-ed25519 "):
         discard_keys()
         known_hosts.unlink(missing_ok=True)
@@ -364,10 +364,10 @@ class SshTransport:
         destination = Path(local)
         try:
             descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except OSError as error:
+        except OSError as e:
             raise GuestCopyError(
                 "cannot create the host copy", context={"path": str(destination)}
-            ) from error
+            ) from e
         keep = False
         try:
             with os.fdopen(descriptor, "wb") as stream:

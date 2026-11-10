@@ -321,8 +321,8 @@ class ImageStore:
                     if len(chunk) > self._chunk_size:
                         raise ImageStoreError("downloader exceeded the requested chunk size")
                     publish(chunk)
-            except Exception as error:
-                failure = error
+            except Exception as e:
+                failure = e
             finally:
                 if response is not None:
                     with contextlib.suppress(Exception):
@@ -375,8 +375,8 @@ class ImageStore:
     def _parse_manifest(self, data: bytes, basename: str) -> str:
         try:
             text = data.decode("ascii")
-        except UnicodeDecodeError as error:
-            raise ImageStoreError("SHA256SUMS is not valid ASCII") from error
+        except UnicodeDecodeError as e:
+            raise ImageStoreError("SHA256SUMS is not valid ASCII") from e
         found: str | None = None
         for line_number, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
@@ -477,18 +477,18 @@ class ImageStore:
                 last_error = ImageStoreError(
                     f"image server returned HTTP {status}", context={"url": url}
                 )
-            except HTTPError as error:
-                last_error = error
+            except HTTPError as e:
+                last_error = e
                 try:
-                    if not 500 <= error.code < 600 and error.code != 429:
+                    if not 500 <= e.code < 600 and e.code != 429:
                         raise ImageStoreError(
-                            f"image server returned HTTP {error.code}", context={"url": url}
-                        ) from error
-                    delay = self._retry_delay(error, attempt)
+                            f"image server returned HTTP {e.code}", context={"url": url}
+                        ) from e
+                    delay = self._retry_delay(e, attempt)
                 finally:
-                    error.close()
-            except (OSError, URLError) as error:
-                last_error = error
+                    e.close()
+            except (OSError, URLError) as e:
+                last_error = e
                 delay = self._retry_base_seconds * (2**attempt)
             if attempt + 1 < self._retry_attempts:
                 delay = min(delay, self._remaining(deadline, "download retry backoff"))

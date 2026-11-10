@@ -206,9 +206,9 @@ def run_assertions(
         started = clock()
         try:
             evaluation = active.evaluate(assertion, transport)
-        except SshTransportError as error:
-            detail = str(error.context.get("stderr") or "").strip()
-            blocked_reason = f"SSH transport unavailable: {error.message}" + (
+        except SshTransportError as e:
+            detail = str(e.context.get("stderr") or "").strip()
+            blocked_reason = f"SSH transport unavailable: {e.message}" + (
                 f" ({detail})" if detail else ""
             )
             results.append(_blocked(assertion, boot, blocked_reason, clock() - started))

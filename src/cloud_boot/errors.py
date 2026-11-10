@@ -102,9 +102,9 @@ class CloudBootError(Exception):
     The defaults all mean "internal", so an unclassified error is reported as a cloud-boot bug.
     """
 
+    message: str
     code: str
     phase: str
-    message: str
     remediation: str | None
     context: Mapping[str, object]
     exit_code: int
@@ -121,12 +121,12 @@ class CloudBootError(Exception):
     ) -> None:
         try:
             normalized_phase = ErrorPhase(phase)
-        except ValueError as exc:
-            raise ValueError(f"unknown error phase: {phase!r}") from exc
+        except ValueError as e:
+            raise ValueError(f"unknown error phase: {phase!r}") from e
         super().__init__(message)
+        self.message = message
         self.code = code
         self.phase = normalized_phase.value
-        self.message = message
         self.remediation = remediation
         self.context = dict(context or {})
         self.exit_code = int(exit_code)

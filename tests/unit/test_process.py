@@ -119,8 +119,8 @@ def test_start_does_not_block_on_large_stdin() -> None:
                     )
                 )
             )
-        except BaseException as exc:
-            errors.append(exc)
+        except BaseException as e:
+            errors.append(e)
 
     thread = threading.Thread(target=start_process, daemon=True)
     thread.start()
@@ -229,8 +229,8 @@ def test_normal_exit_cleans_inherited_pipes_and_stdin() -> None:
     def wait_process() -> None:
         try:
             results.append(process.wait(timeout=1))
-        except BaseException as exc:
-            errors.append(exc)
+        except BaseException as e:
+            errors.append(e)
 
     waiter = threading.Thread(target=wait_process, daemon=True)
     started = time.monotonic()

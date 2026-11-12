@@ -156,6 +156,7 @@ def _find_secret_references(
     value: object,
     location: tuple[LocationPart, ...] = (),
     active_containers: set[int] | None = None,
+    seen: set[int] | None = None,
 ) -> list[ScenarioIssue]:
     issues: list[ScenarioIssue] = []
     if isinstance(value, str):
@@ -172,10 +173,18 @@ def _find_secret_references(
 
     if active_containers is None:
         active_containers = set()
+    if seen is None:
+        seen = set()
     identity = id(value)
+    # Still on the current path: the container holds itself.
     if identity in active_containers:
         return [ScenarioIssue(location, "recursive YAML aliases are not allowed")]
+    # Shared through an alias and already checked; walking it again would make the work grow
+    # with the expanded tree instead of the document.
+    if identity in seen:
+        return issues
 
+    seen.add(identity)
     active_containers.add(identity)
     try:
         if isinstance(value, Mapping):
@@ -188,10 +197,12 @@ def _find_secret_references(
                             "secret references are not supported in Milestone 0",
                         )
                     )
-                issues.extend(_find_secret_references(item, key_location, active_containers))
+                issues.extend(_find_secret_references(item, key_location, active_containers, seen))
         else:
             for index, item in enumerate(value):
-                issues.extend(_find_secret_references(item, (*location, index), active_containers))
+                issues.extend(
+                    _find_secret_references(item, (*location, index), active_containers, seen)
+                )
     finally:
         active_containers.remove(identity)
     return issues

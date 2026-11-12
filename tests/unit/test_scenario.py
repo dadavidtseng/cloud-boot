@@ -212,6 +212,19 @@ def test_rejects_recursive_yaml_alias(tmp_path: Path) -> None:
         load_scenario(source)
 
 
+def test_checks_each_aliased_container_once(tmp_path: Path) -> None:
+    # Each level holds the previous one twice, so the expanded tree has 2**10 copies of `l0`.
+    # Walking every copy would report the secret 1024 times and, at the alias limit, take hours.
+    levels = ["l0: &l0 ['${secret:TOKEN}']"]
+    levels += [f"l{n}: &l{n} [*l{n - 1}, *l{n - 1}]" for n in range(1, 11)]
+    source = write_scenario(tmp_path, "\n".join(levels) + "\n")
+
+    with pytest.raises(ScenarioValidationError) as raised:
+        load_scenario(source)
+
+    assert [issue.field for issue in raised.value.issues] == ["$.l0[0]"]
+
+
 def test_rejects_excessive_yaml_nesting(tmp_path: Path) -> None:
     source = write_scenario(
         tmp_path,

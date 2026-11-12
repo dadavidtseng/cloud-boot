@@ -218,15 +218,14 @@ def _validate_payload_containment(
     for field_name, payload in _payloads(scenario.seed):
         if payload.file is None:
             continue
-        candidate = (root / payload.file).resolve(strict=False)
-
+        candidate = (root / payload.file).resolve()
+        location = ("seed", field_name, "file")
         if not candidate.is_relative_to(root):
             issues.append(
-                ScenarioIssue(
-                    ("seed", field_name, "file"),
-                    "file path resolves outside the scenario directory",
-                )
+                ScenarioIssue(location, "file path resolves outside the scenario directory")
             )
+        elif not candidate.is_file():
+            issues.append(ScenarioIssue(location, "file does not exist or is not a regular file"))
     return issues
 
 

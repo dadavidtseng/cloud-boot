@@ -294,6 +294,28 @@ seed:
         load_scenario(source)
 
 
+@pytest.mark.parametrize("file_path", ["missing-user-data", ".", "payloads"])
+def test_rejects_payload_file_that_is_missing_or_not_a_file(tmp_path: Path, file_path: str) -> None:
+    # Caught at load time, so a typo fails validation before any image is downloaded.
+    (tmp_path / "payloads").mkdir()
+    source = write_scenario(
+        tmp_path,
+        f"""\
+scenario_version: 1
+name: missing-payload
+seed:
+  instance_id: missing-payload-001
+  user_data:
+    file: {file_path!r}
+""",
+    )
+
+    with pytest.raises(ScenarioValidationError) as raised:
+        load_scenario(source)
+
+    assert "$.seed.user_data.file: file does not exist or is not a regular file" in str(raised.value)
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [

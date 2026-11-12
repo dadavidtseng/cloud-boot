@@ -186,7 +186,8 @@ def test_reports_nonexistent_source_path(tmp_path: Path) -> None:
         load_scenario(source)
 
     assert raised.value.issues[0].location == ("source",)
-    assert f"cannot read {source.resolve()}" in str(raised.value)
+    assert f"cannot read {source.resolve()}: No such file or directory" in str(raised.value)
+    assert str(raised.value).count(str(source.resolve())) == 1
 
 
 def test_rejects_oversized_document_before_parsing(tmp_path: Path) -> None:

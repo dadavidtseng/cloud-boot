@@ -234,7 +234,9 @@ def _read_scenario(path: Path) -> str:
         with path.open("rb") as stream:
             document = stream.read(MAX_SCENARIO_BYTES + 1)
     except OSError as e:
-        raise ScenarioValidationError([ScenarioIssue(("source",), f"cannot read {path}: {e}")]) from e
+        # The OSError text already repeats the path; keep only the reason.
+        message = f"cannot read {path}: {e.strerror or e}"
+        raise ScenarioValidationError([ScenarioIssue(("source",), message)]) from e
 
     if len(document) > MAX_SCENARIO_BYTES:
         raise ScenarioValidationError(

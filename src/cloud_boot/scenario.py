@@ -35,6 +35,7 @@ MAX_SCENARIO_BYTES = 1024 * 1024
 MAX_YAML_ALIASES = 50
 MAX_YAML_DEPTH = 64
 _SECRET_REFERENCE = "${secret:"
+_SECRET_UNSUPPORTED = "secret references are not supported in Milestone 0"
 
 LocationPart = str | int
 
@@ -152,59 +153,40 @@ def _yaml_issue(error: yaml.YAMLError) -> ScenarioIssue:
     return ScenarioIssue(location, str(problem or error).strip())
 
 
-def _find_secret_references(
-    value: object,
-    location: tuple[LocationPart, ...] = (),
-    active_containers: set[int] | None = None,
-    seen: set[int] | None = None,
-) -> list[ScenarioIssue]:
+def _find_secret_references(document: object) -> list[ScenarioIssue]:
     issues: list[ScenarioIssue] = []
-    if isinstance(value, str):
-        if _SECRET_REFERENCE in value:
-            issues.append(
-                ScenarioIssue(
-                    location,
-                    "secret references are not supported in Milestone 0",
-                )
-            )
-        return issues
-    if not isinstance(value, (Mapping, list)):
-        return issues
+    active: set[int] = set()  # containers on the current path, to detect recursion
+    seen: set[int] = set()  # containers already checked, to skip shared aliases
 
-    if active_containers is None:
-        active_containers = set()
-    if seen is None:
-        seen = set()
-    identity = id(value)
-    # Still on the current path: the container holds itself.
-    if identity in active_containers:
-        return [ScenarioIssue(location, "recursive YAML aliases are not allowed")]
-    # Shared through an alias and already checked; walking it again would make the work grow
-    # with the expanded tree instead of the document.
-    if identity in seen:
-        return issues
+    def walk(value: object, location: tuple[LocationPart, ...]) -> None:
+        if isinstance(value, str):
+            if _SECRET_REFERENCE in value:
+                issues.append(ScenarioIssue(location, _SECRET_UNSUPPORTED))
+            return
+        if not isinstance(value, (Mapping, list)):
+            return
+        identity = id(value)
+        if identity in active:
+            issues.append(ScenarioIssue(location, "recursive YAML aliases are not allowed"))
+            return
+        if identity in seen:
+            return
+        seen.add(identity)
+        active.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    key_location = (*location, str(key))
+                    if isinstance(key, str) and _SECRET_REFERENCE in key:
+                        issues.append(ScenarioIssue(key_location, _SECRET_UNSUPPORTED))
+                    walk(item, key_location)
+            else:
+                for index, item in enumerate(value):
+                    walk(item, (*location, index))
+        finally:
+            active.remove(identity)
 
-    seen.add(identity)
-    active_containers.add(identity)
-    try:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                key_location = (*location, str(key))
-                if isinstance(key, str) and _SECRET_REFERENCE in key:
-                    issues.append(
-                        ScenarioIssue(
-                            key_location,
-                            "secret references are not supported in Milestone 0",
-                        )
-                    )
-                issues.extend(_find_secret_references(item, key_location, active_containers, seen))
-        else:
-            for index, item in enumerate(value):
-                issues.extend(
-                    _find_secret_references(item, (*location, index), active_containers, seen)
-                )
-    finally:
-        active_containers.remove(identity)
+    walk(document, ())
     return issues
 
 

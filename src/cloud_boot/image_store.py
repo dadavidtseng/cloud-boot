@@ -261,6 +261,32 @@ class ImageStore:
                 f"cannot use the image cache: {e}", context={"cache_dir": str(self.cache_dir)}
             ) from e
 
+    def _remaining(self, deadline: float, operation: str) -> float:
+        """Return seconds left before `deadline`, or raise a timeout naming `operation`."""
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise ImageStoreError(f"timed out during {operation}", exit_code=ExitCode.TIMEOUT)
+        return remaining
+
+    def _validate_spec(self, spec: ImageSpec) -> None:
+        """Reject anything but the official Noble amd64 server image.
+
+        `ImageSpec` already allows only these values; this guards callers that bypass scenario
+        validation, such as `ImageSpec.model_construct`.
+        """
+        if (spec.release, spec.architecture, spec.variant, spec.source) != (
+            "noble",
+            "amd64",
+            "server-cloudimg",
+            "official",
+        ):
+            raise ImageStoreError("only the official Noble amd64 server-cloudimg is supported")
+
+    @staticmethod
+    def _basename(spec: ImageSpec) -> str:
+        """Return the upstream file name, such as `noble-server-cloudimg-amd64.img`."""
+        return f"{spec.release}-{spec.variant}-{spec.architecture}.img"
+
     def _resolve_locked(self, spec: ImageSpec, basename: str, deadline: float) -> VerifiedImage:
         """Take the release lock, then return a verified cache hit or a fresh download."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -281,13 +307,6 @@ class ImageStore:
             finally:
                 # Closing the file would release the lock too; unlocking first makes it explicit.
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-    def _remaining(self, deadline: float, operation: str) -> float:
-        """Return seconds left before `deadline`, or raise a timeout naming `operation`."""
-        remaining = deadline - self._monotonic()
-        if remaining <= 0:
-            raise ImageStoreError(f"timed out during {operation}", exit_code=ExitCode.TIMEOUT)
-        return remaining
 
     def _acquire_lock(self, fd: int, deadline: float) -> None:
         """Poll for the exclusive cache lock until it is free or the deadline passes."""
@@ -316,25 +335,6 @@ class ImageStore:
                 # deleted it by hand.
                 with contextlib.suppress(FileNotFoundError):
                     stale.unlink()
-
-    def _validate_spec(self, spec: ImageSpec) -> None:
-        """Reject anything but the official Noble amd64 server image.
-
-        `ImageSpec` already allows only these values; this guards callers that bypass scenario
-        validation, such as `ImageSpec.model_construct`.
-        """
-        if (spec.release, spec.architecture, spec.variant, spec.source) != (
-            "noble",
-            "amd64",
-            "server-cloudimg",
-            "official",
-        ):
-            raise ImageStoreError("only the official Noble amd64 server-cloudimg is supported")
-
-    @staticmethod
-    def _basename(spec: ImageSpec) -> str:
-        """Return the upstream file name, such as `noble-server-cloudimg-amd64.img`."""
-        return f"{spec.release}-{spec.variant}-{spec.architecture}.img"
 
     def _read_cached(self, spec: ImageSpec, basename: str, deadline: float) -> VerifiedImage | None:
         """Return the cached image if its pointer is valid and its bytes still hash correctly.
@@ -390,6 +390,30 @@ class ImageStore:
             retrieved_at=float(retrieved_at),
         )
 
+    def _hash_file(self, path: Path, deadline: float) -> tuple[str, int]:
+        """Return the SHA-256 hex digest and size of `path`, read in chunks within the deadline.
+
+        An unreadable or oversized file yields an empty digest, which never matches.
+        """
+        hasher = hashlib.sha256()
+        size_bytes = 0
+        try:
+            with path.open("rb") as source:
+                while True:
+                    self._remaining(deadline, "cached image verification")
+                    chunk = source.read(self._chunk_size)
+                    # Check again after reading: one read can block on slow storage.
+                    self._remaining(deadline, "cached image verification")
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    if size_bytes > self._max_image_bytes:
+                        return "", size_bytes
+                    hasher.update(chunk)
+        except OSError:
+            return "", 0
+        return hasher.hexdigest(), size_bytes
+
     def _download_and_cache(self, spec: ImageSpec, basename: str, deadline: float) -> VerifiedImage:
         """Download, verify, and atomically publish the image, then point the release at it.
 
@@ -439,6 +463,106 @@ class ImageStore:
             if partial_path is not None:
                 with contextlib.suppress(FileNotFoundError):
                     partial_path.unlink()
+
+    def _read_manifest(self, url: str, deadline: float) -> bytes:
+        """Download `SHA256SUMS` into memory, refusing more than `max_manifest_bytes`."""
+        data = bytearray()
+        with contextlib.closing(self._download_chunks(url, deadline)) as chunks:
+            for chunk in chunks:
+                if len(data) + len(chunk) > self._max_manifest_bytes:
+                    raise ImageStoreError("SHA256SUMS exceeds the configured size limit")
+                data.extend(chunk)
+        return bytes(data)
+
+    def _parse_manifest(self, data: bytes, basename: str) -> str:
+        """Return the lowercase digest that `SHA256SUMS` lists for `basename`.
+
+        The whole manifest must look like `sha256sum` output: one malformed or unsafe line, or a
+        duplicate entry for `basename`, rejects it.
+        """
+        try:
+            text = data.decode("ascii")
+        except UnicodeDecodeError as e:
+            raise ImageStoreError("SHA256SUMS is not valid ASCII") from e
+        found: str | None = None
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            match = MANIFEST_LINE_PATTERN.fullmatch(line)
+            if match is None:
+                raise ImageStoreError(f"invalid SHA256SUMS entry on line {line_number}")
+            digest, name = match.groups()
+            # Names are only compared with `basename`, never used as paths. These checks reject
+            # manifests that do not look like Ubuntu's, and back up the pattern if it is loosened.
+            if (
+                PurePosixPath(name).name != name
+                or PureWindowsPath(name).name != name
+                or name in {".", ".."}
+            ):
+                raise ImageStoreError(f"unsafe SHA256SUMS filename on line {line_number}")
+            if name == basename:
+                if found is not None:
+                    raise ImageStoreError(f"duplicate SHA256SUMS entry for {basename}")
+                found = digest.lower()
+        if found is None:
+            raise ImageStoreError(f"SHA256SUMS does not contain the allowlisted image {basename}")
+        return found
+
+    def _stream_image(self, url: str, destination: IO[bytes], deadline: float) -> tuple[str, int]:
+        """Stream the image into `destination`, returning its SHA-256 hex digest and size."""
+        hasher = hashlib.sha256()
+        size_bytes = 0
+        with contextlib.closing(self._download_chunks(url, deadline)) as chunks:
+            for chunk in chunks:
+                size_bytes += len(chunk)
+                if size_bytes > self._max_image_bytes:
+                    raise ImageStoreError("downloaded image exceeds the configured size limit")
+                hasher.update(chunk)
+                destination.write(chunk)
+                self._remaining(deadline, "image download")
+        return hasher.hexdigest(), size_bytes
+
+    def _write_metadata(
+        self, spec: ImageSpec, basename: str, image: VerifiedImage, deadline: float
+    ) -> None:
+        """Atomically point the release at `image`, recording its provenance.
+
+        Only the fields `_read_cached` checks are read back; the rest are for people inspecting
+        the cache.
+        """
+        releases = self.cache_dir / "releases"
+        releases.mkdir(mode=0o700, exist_ok=True)
+        metadata: dict[str, object] = {
+            "schema_version": 1,
+            "release": spec.release,
+            "architecture": spec.architecture,
+            "variant": spec.variant,
+            "source": spec.source,
+            "basename": basename,
+            "digest": image.digest,
+            "size_bytes": image.size_bytes,
+            "source_url": image.source_url,
+            "retrieved_at": image.retrieved_at,
+            "checksum_verified": True,
+            "signature_authenticated": False,
+        }
+        pointer = releases / f"{spec.release}.json"
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix=".metadata-", dir=releases, delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(metadata, temporary, sort_keys=True)
+                temporary.write("\n")
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            self._remaining(deadline, "image metadata publication")
+            os.replace(temporary_path, pointer)
+        finally:
+            if temporary_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    temporary_path.unlink()
 
     def _download_chunks(self, url: str, deadline: float) -> Generator[bytes, None, None]:
         """Yield the body of `url` in chunks, enforcing `deadline` even if the network stalls.
@@ -525,130 +649,6 @@ class ImageStore:
         finally:
             # Stops the producer, and wakes it if it is sleeping between retries.
             cancelled.set()
-
-    def _read_manifest(self, url: str, deadline: float) -> bytes:
-        """Download `SHA256SUMS` into memory, refusing more than `max_manifest_bytes`."""
-        data = bytearray()
-        with contextlib.closing(self._download_chunks(url, deadline)) as chunks:
-            for chunk in chunks:
-                if len(data) + len(chunk) > self._max_manifest_bytes:
-                    raise ImageStoreError("SHA256SUMS exceeds the configured size limit")
-                data.extend(chunk)
-        return bytes(data)
-
-    def _stream_image(self, url: str, destination: IO[bytes], deadline: float) -> tuple[str, int]:
-        """Stream the image into `destination`, returning its SHA-256 hex digest and size."""
-        hasher = hashlib.sha256()
-        size_bytes = 0
-        with contextlib.closing(self._download_chunks(url, deadline)) as chunks:
-            for chunk in chunks:
-                size_bytes += len(chunk)
-                if size_bytes > self._max_image_bytes:
-                    raise ImageStoreError("downloaded image exceeds the configured size limit")
-                hasher.update(chunk)
-                destination.write(chunk)
-                self._remaining(deadline, "image download")
-        return hasher.hexdigest(), size_bytes
-
-    def _parse_manifest(self, data: bytes, basename: str) -> str:
-        """Return the lowercase digest that `SHA256SUMS` lists for `basename`.
-
-        The whole manifest must look like `sha256sum` output: one malformed or unsafe line, or a
-        duplicate entry for `basename`, rejects it.
-        """
-        try:
-            text = data.decode("ascii")
-        except UnicodeDecodeError as e:
-            raise ImageStoreError("SHA256SUMS is not valid ASCII") from e
-        found: str | None = None
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            match = MANIFEST_LINE_PATTERN.fullmatch(line)
-            if match is None:
-                raise ImageStoreError(f"invalid SHA256SUMS entry on line {line_number}")
-            digest, name = match.groups()
-            # Names are only compared with `basename`, never used as paths. These checks reject
-            # manifests that do not look like Ubuntu's, and back up the pattern if it is loosened.
-            if (
-                PurePosixPath(name).name != name
-                or PureWindowsPath(name).name != name
-                or name in {".", ".."}
-            ):
-                raise ImageStoreError(f"unsafe SHA256SUMS filename on line {line_number}")
-            if name == basename:
-                if found is not None:
-                    raise ImageStoreError(f"duplicate SHA256SUMS entry for {basename}")
-                found = digest.lower()
-        if found is None:
-            raise ImageStoreError(f"SHA256SUMS does not contain the allowlisted image {basename}")
-        return found
-
-    def _write_metadata(
-        self, spec: ImageSpec, basename: str, image: VerifiedImage, deadline: float
-    ) -> None:
-        """Atomically point the release at `image`, recording its provenance.
-
-        Only the fields `_read_cached` checks are read back; the rest are for people inspecting
-        the cache.
-        """
-        releases = self.cache_dir / "releases"
-        releases.mkdir(mode=0o700, exist_ok=True)
-        metadata: dict[str, object] = {
-            "schema_version": 1,
-            "release": spec.release,
-            "architecture": spec.architecture,
-            "variant": spec.variant,
-            "source": spec.source,
-            "basename": basename,
-            "digest": image.digest,
-            "size_bytes": image.size_bytes,
-            "source_url": image.source_url,
-            "retrieved_at": image.retrieved_at,
-            "checksum_verified": True,
-            "signature_authenticated": False,
-        }
-        pointer = releases / f"{spec.release}.json"
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", prefix=".metadata-", dir=releases, delete=False
-            ) as temporary:
-                temporary_path = Path(temporary.name)
-                json.dump(metadata, temporary, sort_keys=True)
-                temporary.write("\n")
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            self._remaining(deadline, "image metadata publication")
-            os.replace(temporary_path, pointer)
-        finally:
-            if temporary_path is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    temporary_path.unlink()
-
-    def _hash_file(self, path: Path, deadline: float) -> tuple[str, int]:
-        """Return the SHA-256 hex digest and size of `path`, read in chunks within the deadline.
-
-        An unreadable or oversized file yields an empty digest, which never matches.
-        """
-        hasher = hashlib.sha256()
-        size_bytes = 0
-        try:
-            with path.open("rb") as source:
-                while True:
-                    self._remaining(deadline, "cached image verification")
-                    chunk = source.read(self._chunk_size)
-                    # Check again after reading: one read can block on slow storage.
-                    self._remaining(deadline, "cached image verification")
-                    if not chunk:
-                        break
-                    size_bytes += len(chunk)
-                    if size_bytes > self._max_image_bytes:
-                        return "", size_bytes
-                    hasher.update(chunk)
-        except OSError:
-            return "", 0
-        return hasher.hexdigest(), size_bytes
 
     def _open_with_retry(self, url: str, deadline: float, cancelled: threading.Event) -> IO[bytes]:
         """Open `url`, retrying connection failures, HTTP 429, and 5xx with backoff.

@@ -709,6 +709,7 @@ class ImageStore:
         """
         headers = getattr(response, "headers", {})
         retry_after = headers.get("Retry-After") if hasattr(headers, "get") else None
+
         if retry_after:
             try:
                 seconds = float(retry_after)

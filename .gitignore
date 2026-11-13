@@ -18,6 +18,9 @@ build/
 dist/
 *.egg-info/
 
+# Documentation build output
+docs/_build/
+
 # Coverage output
 .coverage
 coverage.xml

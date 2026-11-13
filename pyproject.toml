@@ -37,6 +37,12 @@ dev = [
   "ruff==0.17.3",
   "types-PyYAML>=6.0,<7",
 ]
+# Builds the documentation site: `uv run --locked --group docs sphinx-build ...`.
+docs = [
+  "furo>=2025.12.19",
+  "myst-parser>=5.2,<6",
+  "sphinx>=9.1,<10",
+]
 
 [project.urls]
 Repository = "https://github.com/dadavidtseng/cloud-boot"

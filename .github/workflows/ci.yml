@@ -44,3 +44,18 @@ jobs:
 
       - name: Build wheel and sdist
         run: uv build
+
+  # Builds the documentation site; warnings fail the build, so malformed docstrings are caught.
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: true
+
+      - name: Build documentation
+        run: uv run --locked --group docs sphinx-build -W --keep-going -b html docs docs/_build/html

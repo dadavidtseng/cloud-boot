@@ -116,10 +116,10 @@ class ProcessTimeoutError(CloudBootError):
 
     Raised in three situations:
 
-    - `ManagedProcess.wait` reached its deadline. The process group has already received SIGTERM and,
-    if needed, SIGKILL.
-    - `ManagedProcess.stop` sent SIGKILL and the process still had not exited by the deadline. It may
-    still be running, for example while blocked in uninterruptible I/O.
+    - `ManagedProcess.wait` reached its deadline. The process group has already received SIGTERM
+      and, if needed, SIGKILL.
+    - `ManagedProcess.stop` sent SIGKILL and the process still had not exited by the deadline. It
+      may still be running, for example while blocked in uninterruptible I/O.
     - The coordinator refused to start a guest command because the run deadline had already
       passed. No process exists in this case.
 

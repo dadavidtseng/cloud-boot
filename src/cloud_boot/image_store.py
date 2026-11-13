@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, Any, cast
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .errors import CloudBootError, ErrorPhase, ExitCode
@@ -64,6 +64,11 @@ def _content_length(response: object) -> int | None:
 
     # HTTP allows only ASCII digits; `isdigit` alone would accept characters like "²".
     return int(value) if value.isascii() and value.isdigit() else None
+
+
+def _is_retryable(status: int) -> bool:
+    """Return whether an HTTP status may clear up on retry: server errors and rate limiting."""
+    return 500 <= status < 600 or status == 429
 
 
 class ImageStoreError(CloudBootError):
@@ -134,6 +139,15 @@ class ImageStore:
         retry_base_seconds: float = 0.5,
         resolve_timeout_seconds: float = DEFAULT_RESOLVE_TIMEOUT_SECONDS,
     ) -> None:
+        if max_image_bytes <= 0 or max_manifest_bytes <= 0 or chunk_size <= 0:
+            raise ValueError("image and manifest limits and chunk size must be positive")
+        if retry_attempts <= 0 or retry_base_seconds < 0 or not math.isfinite(retry_base_seconds):
+            raise ValueError(
+                "retry attempts must be positive and the retry base delay finite and non-negative"
+            )
+        if not math.isfinite(resolve_timeout_seconds) or resolve_timeout_seconds <= 0:
+            raise ValueError("resolve timeout must be positive and finite")
+
         self.cache_dir = Path(cache_dir)
         self._downloader = downloader or self._urllib_downloader
         self._command_runner = command_runner
@@ -147,12 +161,6 @@ class ImageStore:
         self._retry_attempts = retry_attempts
         self._retry_base_seconds = retry_base_seconds
         self._resolve_timeout_seconds = resolve_timeout_seconds
-        if max_image_bytes <= 0 or max_manifest_bytes <= 0 or chunk_size <= 0:
-            raise ValueError("image and manifest limits and chunk size must be positive")
-        if retry_attempts <= 0 or retry_base_seconds < 0 or not math.isfinite(retry_base_seconds):
-            raise ValueError("retry settings must be positive and finite")
-        if not math.isfinite(resolve_timeout_seconds) or resolve_timeout_seconds <= 0:
-            raise ValueError("resolve timeout must be positive and finite")
 
     def resolve(
         self, spec: ImageSpec | None = None, *, deadline: float | None = None
@@ -168,7 +176,7 @@ class ImageStore:
         if deadline is not None:
             end = min(end, deadline)
         self._remaining(end, "image resolution")
-        image_spec = spec or ImageSpec()
+        image_spec = spec if spec is not None else ImageSpec()
         self._validate_spec(image_spec)
         basename = self._basename(image_spec)
         try:
@@ -250,7 +258,7 @@ class ImageStore:
         digest = metadata.get("digest")
         size_bytes = metadata.get("size_bytes")
         retrieved_at = metadata.get("retrieved_at")
-        source_url = metadata.get("source_url")
+        source_url = f"{self._base_url}{basename}"
         if (
             metadata.get("basename") != basename
             or metadata.get("checksum_verified") is not True
@@ -262,7 +270,7 @@ class ImageStore:
             or not isinstance(retrieved_at, (int, float))
             or isinstance(retrieved_at, bool)
             or not math.isfinite(retrieved_at)
-            or source_url != f"{self._base_url}{basename}"
+            or metadata.get("source_url") != source_url
         ):
             return None
         # Validate the digest before constructing or accessing its filesystem path.
@@ -505,28 +513,25 @@ class ImageStore:
                 status = int(getattr(response, "status", 200))
                 if 200 <= status < 300:
                     return response
+                error = ImageStoreError(f"image server returned HTTP {status}", context={"url": url})
                 try:
+                    if not _is_retryable(status):
+                        raise error
                     delay = self._retry_delay(response, attempt)
                 finally:
                     response.close()
-                if not 500 <= status < 600 and status != 429:
-                    raise ImageStoreError(
-                        f"image server returned HTTP {status}", context={"url": url}
-                    )
-                last_error = ImageStoreError(
-                    f"image server returned HTTP {status}", context={"url": url}
-                )
+                last_error = error
             except HTTPError as e:
                 last_error = e
                 try:
-                    if not 500 <= e.code < 600 and e.code != 429:
+                    if not _is_retryable(e.code):
                         raise ImageStoreError(
                             f"image server returned HTTP {e.code}", context={"url": url}
                         ) from e
                     delay = self._retry_delay(e, attempt)
                 finally:
                     e.close()
-            except (OSError, URLError) as e:
+            except OSError as e:  # Includes `URLError`: refused connections, DNS, and timeouts.
                 last_error = e
                 delay = self._retry_base_seconds * (2**attempt)
             if attempt + 1 < self._retry_attempts:

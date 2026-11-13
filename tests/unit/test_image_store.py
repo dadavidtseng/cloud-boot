@@ -192,6 +192,39 @@ def test_interrupted_image_download_cleans_partial(tmp_path: Path) -> None:
     assert not (tmp_path / "cache" / "releases" / "noble.json").exists()
 
 
+def test_body_shorter_than_content_length_is_a_closed_connection(tmp_path: Path) -> None:
+    manifest_url, image_url = urls()
+    declared = {"Content-Length": str(len(IMAGE_BYTES))}
+    downloader = FakeDownloader(
+        {
+            manifest_url: [FakeResponse(MANIFEST.encode())],
+            image_url: [FakeResponse(IMAGE_BYTES[:5], headers=declared)],
+        }
+    )
+
+    with pytest.raises(ImageStoreError, match="connection closed before") as raised:
+        store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
+
+    assert raised.value.exit_code == ExitCode.PREPARATION
+    assert raised.value.context["expected_bytes"] == len(IMAGE_BYTES)
+    assert raised.value.context["received_bytes"] == 5
+    assert not list((tmp_path / "cache").glob(".partial-*"))
+
+
+def test_invalid_content_length_is_ignored(tmp_path: Path) -> None:
+    manifest_url, image_url = urls()
+    downloader = FakeDownloader(
+        {
+            manifest_url: [FakeResponse(MANIFEST.encode())],
+            image_url: [FakeResponse(IMAGE_BYTES, headers={"Content-Length": "abc"})],
+        }
+    )
+
+    image = store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
+
+    assert image.digest == IMAGE_DIGEST
+
+
 def test_manifest_size_limit_fails_before_image_download(tmp_path: Path) -> None:
     manifest_url, image_url = urls()
     downloader = FakeDownloader(

@@ -53,6 +53,19 @@ def _sleep_until_cancelled(seconds: float, cancelled: threading.Event | None) ->
         cancelled.wait(seconds)
 
 
+def _content_length(response: object) -> int | None:
+    """Return the response's declared body size, or `None` if absent or invalid."""
+    get = getattr(getattr(response, "headers", None), "get", None)
+    value = get("Content-Length") if callable(get) else None
+
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+
+    # HTTP allows only ASCII digits; `isdigit` alone would accept characters like "²".
+    return int(value) if value.isascii() and value.isdigit() else None
+
+
 class ImageStoreError(CloudBootError):
     """Expected failure while resolving or caching a cloud image.
 
@@ -324,13 +337,28 @@ class ImageStore:
             failure: Exception | None = None
             try:
                 response = self._open_with_retry(url, deadline, cancelled)
+                expected_bytes = _content_length(response)
+                received_bytes = 0
                 while not cancelled.is_set():
                     self._remaining(deadline, "image download")
                     chunk = response.read(self._chunk_size)
                     if not chunk:
+                        # urllib reports a body cut short as a normal end, so compare the byte
+                        # count with Content-Length; the digest check would catch it, but would
+                        # blame the image instead of the connection.
+                        if expected_bytes is not None and received_bytes < expected_bytes:
+                            raise ImageStoreError(
+                                "connection closed before the download finished",
+                                context={
+                                    "url": url,
+                                    "expected_bytes": expected_bytes,
+                                    "received_bytes": received_bytes,
+                                },
+                            )
                         break
                     if len(chunk) > self._chunk_size:
                         raise ImageStoreError("downloader exceeded the requested chunk size")
+                    received_bytes += len(chunk)
                     publish(chunk)
             except Exception as e:
                 failure = e

@@ -158,18 +158,29 @@ class ImageStore:
         image_spec = spec or ImageSpec()
         self._validate_spec(image_spec)
         basename = self._basename(image_spec)
+        try:
+            return self._resolve_locked(image_spec, basename, end)
+        except OSError as e:
+            # Unwritable directories, a full disk, and similar host problems are the user's to fix,
+            # not cloud-boot bugs.
+            raise ImageStoreError(
+                f"cannot use the image cache: {e}", context={"cache_dir": str(self.cache_dir)}
+            ) from e
+
+    def _resolve_locked(self, spec: ImageSpec, basename: str, deadline: float) -> VerifiedImage:
+        """Take the release lock, then return a verified cache hit or a fresh download."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         lock_dir = self.cache_dir / ".locks"
         lock_dir.mkdir(mode=0o700, exist_ok=True)
-        lock_path = lock_dir / f"{image_spec.release}.lock"
+        lock_path = lock_dir / f"{spec.release}.lock"
         with lock_path.open("a+b") as lock_file:
-            self._acquire_lock(lock_file.fileno(), end)
+            self._acquire_lock(lock_file.fileno(), deadline)
             try:
-                self._remove_stale_partials(end)
-                cached = self._read_cached(image_spec, basename, end)
+                self._remove_stale_partials(deadline)
+                cached = self._read_cached(spec, basename, deadline)
                 if cached is not None:
                     return cached
-                return self._download_and_cache(image_spec, basename, end)
+                return self._download_and_cache(spec, basename, deadline)
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 

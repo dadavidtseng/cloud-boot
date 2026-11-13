@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import io
 import json
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -423,6 +424,30 @@ def test_cleans_crash_leftovers_even_on_cache_hit(tmp_path: Path) -> None:
     assert not link.is_symlink()
     assert outside.read_bytes() == b"do not touch"
     assert downloader.calls == [manifest_url, image_url]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_cache_is_a_preparation_failure(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o500)
+    try:
+        with pytest.raises(ImageStoreError, match="cannot use the image cache") as raised:
+            store(tmp_path, FakeDownloader({})).resolve()
+    finally:
+        cache.chmod(0o700)
+
+    assert raised.value.exit_code == ExitCode.PREPARATION
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+def test_undeletable_leftover_is_a_preparation_failure(tmp_path: Path) -> None:
+    (tmp_path / "cache" / ".partial-dir").mkdir(parents=True)
+
+    with pytest.raises(ImageStoreError, match="cannot use the image cache") as raised:
+        store(tmp_path, FakeDownloader({})).resolve()
+
+    assert raised.value.exit_code == ExitCode.PREPARATION
+    assert isinstance(raised.value.__cause__, IsADirectoryError)
 
 
 @pytest.mark.parametrize("status", [429, 503])

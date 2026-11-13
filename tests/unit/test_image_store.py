@@ -11,7 +11,9 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from email.message import Message
+from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -874,3 +876,36 @@ def test_default_sleeper_without_event_sleeps_for_the_full_delay() -> None:
     _sleep_until_cancelled(0.05, None)
 
     assert time.monotonic() - started >= 0.04
+
+
+NOW = 1_800_000_000.0
+
+
+def http_date(offset_seconds: float) -> str:
+    return format_datetime(datetime.fromtimestamp(NOW + offset_seconds, UTC), usegmt=True)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [
+        ("2", 2.0),
+        ("0", 0.0),
+        ("-5", 0.0),
+        ("999", 60.0),
+        ("inf", 2.0),
+        ("nan", 2.0),
+        ("", 2.0),
+        ("abc", 2.0),
+        (http_date(10), 10.0),
+        (http_date(-10), 0.0),
+        (http_date(3600), 60.0),
+        (None, 2.0),
+    ],
+)
+def test_retry_delay_honors_retry_after_forms(retry_after: str | None, expected: float) -> None:
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    response = FakeResponse(b"", status=503, headers=headers)
+    image_store = ImageStore(Path("unused"), wall_clock=lambda: NOW, retry_base_seconds=0.5)
+
+    # Attempt 2 makes the exponential fallback 0.5 * 2**2 = 2 seconds.
+    assert image_store._retry_delay(response, attempt=2) == expected

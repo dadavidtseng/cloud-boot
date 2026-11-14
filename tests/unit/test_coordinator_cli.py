@@ -184,7 +184,7 @@ class Harness:
         self._step("prepare")
         overlay = Path(run_dir) / "overlay.qcow2"
         overlay.write_bytes(b"qcow2")
-        return DiskArtifact(overlay, image.path, disk_gib)
+        return DiskArtifact(overlay)
 
     def start(self, spec: VmLaunchSpec) -> VmHandle:
         self._step("start")

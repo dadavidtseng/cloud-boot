@@ -116,9 +116,7 @@ def make_backend(factory: FakeFactory, ports: tuple[int, ...] = (40001, 40002, 4
 
 
 def launch_spec(tmp_path: Path, console: Any = None) -> VmLaunchSpec:
-    disk = DiskArtifact(
-        path=tmp_path / "run" / "overlay.qcow2", backing_image=tmp_path / "base.img", size_gib=8
-    )
+    disk = DiskArtifact(path=tmp_path / "run" / "overlay.qcow2")
     return VmLaunchSpec(
         disk=disk,
         seed_image=tmp_path / "run" / "seed.iso",
@@ -182,7 +180,7 @@ def test_prepare_creates_overlay_with_absolute_backing_and_explicit_format(
             "8G",
         )
     ]
-    assert disk == DiskArtifact(path=overlay, backing_image=backing, size_gib=8)
+    assert disk == DiskArtifact(path=overlay)
     assert clock.now <= 30.0
 
 
@@ -232,8 +230,6 @@ def test_qemu_argv_is_deterministic_and_forwards_only_loopback_ssh(tmp_path: Pat
         "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:40001-:22",
         "-device", "virtio-net-pci,netdev=net0",
     )  # fmt: skip
-    # QEMU only sees the overlay; the base image is reached read-only through its backing file.
-    assert not any(str(spec.disk.backing_image) in argument for argument in argv)
 
 
 def test_qemu_argv_escapes_commas_in_paths(tmp_path: Path) -> None:
@@ -251,7 +247,7 @@ def test_launch_spec_rejects_unsafe_name_and_unsupported_network(
     tmp_path: Path, field: str, value: str
 ) -> None:
     fields: dict[str, Any] = {
-        "disk": DiskArtifact(tmp_path / "overlay.qcow2", tmp_path / "base.img", 8),
+        "disk": DiskArtifact(tmp_path / "overlay.qcow2"),
         "seed_image": tmp_path / "seed.iso",
         "resources": ResourceSpec(),
         "console": MemorySink(),

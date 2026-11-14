@@ -107,8 +107,6 @@ class DiskArtifact:
     """A per-run qcow2 overlay backed read-only by the verified base image."""
 
     path: Path
-    backing_image: Path
-    size_gib: int
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -291,7 +289,7 @@ class QemuBackend:
             deadline: Monotonic deadline for qemu-img.
 
         Returns:
-            The overlay path, its backing image, and its virtual size.
+            The overlay, ready to pass to `start` in a `VmLaunchSpec`.
 
         Raises:
             OverlayError: If the overlay already exists or qemu-img fails.
@@ -322,7 +320,7 @@ class QemuBackend:
                 "qemu-img could not create the overlay",
                 context={"returncode": result.returncode, "stderr": _tail(result.stderr)},
             )
-        return DiskArtifact(path=overlay, backing_image=backing, size_gib=disk_gib)
+        return DiskArtifact(path=overlay)
 
     def start(self, spec: VmLaunchSpec) -> VmHandle:
         """Launch QEMU and return once it survives the startup window.

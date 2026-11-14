@@ -588,7 +588,7 @@ class ManagedProcess:
             threads.append(self._stdin_thread)
         return threads
 
-    def _threads_alive(self) -> bool:
+    def _any_thread_alive(self) -> bool:
         return any(thread.is_alive() for thread in self._all_threads())
 
     def _join_threads(self, deadline: float) -> None:
@@ -624,7 +624,7 @@ class ManagedProcess:
         behind (they are daemons), and the result uses whatever output was captured so far.
         """
         self._join_threads(join_deadline)
-        if self._threads_alive():
+        if self._any_thread_alive():
             self.kill()
             self._join_threads(join_deadline)
         return CommandResult(

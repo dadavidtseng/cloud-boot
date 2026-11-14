@@ -2,8 +2,22 @@
 # seed.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Build and verify NoCloud seed media for one boot plan."""
+"""Build and verify NoCloud seed media for one boot plan.
 
+cloud-init's NoCloud datasource looks for a filesystem labeled `CIDATA` and reads its
+configuration from files at the root. `build_seed` writes them into an ISO 9660 image, which the
+VM attaches as a read-only disk:
+
+- `meta-data`: written by cloud-boot, with the instance ID, hostname, and the run's SSH key.
+- `user-data`: the scenario's payload.
+- `vendor-data`: the scenario's payload, or empty.
+- `network-config`: the scenario's payload, only when given.
+
+Every file is read back from the finished ISO and compared byte for byte before the seed is
+published as `seed.iso`.
+"""
+
+# ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import contextlib
@@ -24,6 +38,7 @@ from pycdlib.pycdlibexception import PyCdlibException
 from .errors import CloudBootError, ErrorPhase, ExitCode
 from .models import BootPlan, PayloadSpec, SeedSpec
 
+# ----------------------------------------------------------------------------------------------------
 __all__ = [
     "MAX_PAYLOAD_BYTES",
     "SEED_FILENAME",
@@ -35,9 +50,10 @@ __all__ = [
     "render_meta_data",
 ]
 
-SEED_LABEL = "CIDATA"
+# ----------------------------------------------------------------------------------------------------
+SEED_LABEL = "CIDATA"  # The volume label NoCloud searches for.
 SEED_FILENAME = "seed.iso"
-MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # Per payload; `PayloadSpec` documents this same limit.
 
 # NoCloud reads these Rock Ridge/Joliet names; each needs an ISO-9660 level-1 (8.3) alias.
 _LEVEL1_PATHS: Mapping[str, str] = {
@@ -66,7 +82,13 @@ class SeedBuildError(CloudBootError):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class SeedFile:
-    """Digest and size of one file stored on the seed media."""
+    """Digest and size of one file stored on the seed media.
+
+    Attributes:
+        name: NoCloud file name, such as `user-data`.
+        sha256: Lowercase hex SHA-256 of the file's bytes.
+        size_bytes: File size in bytes; the run report does not include it yet.
+    """
 
     name: str
     sha256: str
@@ -76,7 +98,12 @@ class SeedFile:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class SeedArtifact:
-    """A verified NoCloud seed ISO and the identity of each file it contains."""
+    """A verified NoCloud seed ISO and the identity of each file it contains.
+
+    Attributes:
+        path: The published `seed.iso`.
+        files: One entry per file on the media, in the order written.
+    """
 
     path: Path
     files: tuple[SeedFile, ...]
@@ -123,6 +150,8 @@ def build_seed(
         with os.fdopen(descriptor, "w+b") as stream:
             _write_iso(contents, stream)
             stream.flush()
+            # fsync surfaces write errors here, as a SeedBuildError. Verification reads back
+            # through the page cache, so it checks pycdlib's output, not the disk.
             os.fsync(stream.fileno())
             stream.seek(0)
             _verify_iso(contents, stream)
@@ -131,6 +160,7 @@ def build_seed(
     except OSError as e:
         raise SeedBuildError("cannot write the seed ISO", context={"path": str(destination)}) from e
     finally:
+        # After os.replace the temporary name no longer exists; this only cleans up failures.
         with contextlib.suppress(FileNotFoundError):
             temporary_path.unlink()
     return SeedArtifact(
@@ -144,6 +174,7 @@ def build_seed(
 
 # ----------------------------------------------------------------------------------------------------
 def _seed_contents(seed: SeedSpec, ssh_public_key: str, scenario_dir: Path) -> dict[str, bytes]:
+    """Return each NoCloud file's bytes, keyed by file name, in the order they are written."""
     contents = {
         "meta-data": render_meta_data(seed, ssh_public_key),
         "user-data": _payload_bytes("user_data", seed.user_data, scenario_dir),
@@ -163,7 +194,10 @@ def _seed_contents(seed: SeedSpec, ssh_public_key: str, scenario_dir: Path) -> d
 
 # ----------------------------------------------------------------------------------------------------
 def render_meta_data(seed: SeedSpec, ssh_public_key: str) -> bytes:
-    """Serialize harness-owned NoCloud metadata.
+    """Serialize the `meta-data` file, the one seed file cloud-boot writes itself.
+
+    cloud-init installs `public-keys` for the image's default user, which is how cloud-boot
+    later connects over SSH.
 
     Args:
         seed: Seed inputs supplying the instance ID and optional hostname.
@@ -180,13 +214,21 @@ def render_meta_data(seed: SeedSpec, ssh_public_key: str) -> bytes:
     if seed.local_hostname is not None:
         document["local-hostname"] = seed.local_hostname
     document["public-keys"] = [ssh_public_key]
-    # A large width keeps PyYAML from folding long keys across lines.
+    # Keep the insertion order, which follows NoCloud's examples. A large width keeps PyYAML from
+    # folding long keys across lines.
     rendered = yaml.safe_dump(document, sort_keys=False, default_flow_style=False, width=1 << 16)
     return rendered.encode("utf-8")
 
 
 # ----------------------------------------------------------------------------------------------------
 def _validate_public_key(key: str) -> None:
+    """Reject a public key that is not one `type data [comment]` line.
+
+    Raises:
+        SeedBuildError: If the key is empty, padded, multi-line, or lacks key data.
+    """
+    # YAML would quote a newline safely, but cloud-init writes each key as one `authorized_keys`
+    # line, so an embedded newline would authorize an extra line.
     if not key or key != key.strip() or any(character in key for character in "\r\n\x00"):
         raise SeedBuildError("SSH public key must be one non-empty line")
     if len(key.split()) < 2:
@@ -195,11 +237,17 @@ def _validate_public_key(key: str) -> None:
 
 # ----------------------------------------------------------------------------------------------------
 def _payload_bytes(field: str, payload: PayloadSpec, scenario_dir: Path) -> bytes:
+    """Return one payload's bytes, from inline text or a scenario-relative file.
+
+    Raises:
+        SeedBuildError: If the file cannot be read or the payload exceeds `MAX_PAYLOAD_BYTES`.
+    """
     if payload.inline is not None:
         data = payload.inline.encode("utf-8")
     elif payload.file is not None:
         data = _read_payload_file(field, payload.file, scenario_dir)
     else:
+        # Unreachable through validation: `PayloadSpec` requires exactly one source.
         raise SeedBuildError(f"{field} has no payload source")
     if len(data) > MAX_PAYLOAD_BYTES:
         raise SeedBuildError(
@@ -211,6 +259,12 @@ def _payload_bytes(field: str, payload: PayloadSpec, scenario_dir: Path) -> byte
 
 # ----------------------------------------------------------------------------------------------------
 def _read_payload_file(field: str, relative: str, scenario_dir: Path) -> bytes:
+    """Read a payload file, checking again that it is a regular file inside `scenario_dir`.
+
+    Returns:
+        At most `MAX_PAYLOAD_BYTES + 1` bytes, so the caller can detect an oversized file
+        without reading all of it.
+    """
     # Re-check containment at read time: the file may have changed since the scenario loaded.
     context = {"field": field, "file": relative}
     try:
@@ -238,8 +292,15 @@ def _read_payload_file(field: str, relative: str, scenario_dir: Path) -> bytes:
 
 # ----------------------------------------------------------------------------------------------------
 def _write_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
+    """Write `contents` to `stream` as an ISO 9660 image labeled `SEED_LABEL`.
+
+    Raises:
+        SeedBuildError: If pycdlib rejects the image.
+    """
     iso = pycdlib.PyCdlib()
     try:
+        # Rock Ridge 1.09 and Joliet level 3 match genisoimage, which `cloud-localds` uses; Linux
+        # reads the Rock Ridge names, and level 1 needs the 8.3 aliases in `_LEVEL1_PATHS`.
         iso.new(interchange_level=1, vol_ident=SEED_LABEL, joliet=3, rock_ridge="1.09")
         for name, data in contents.items():
             iso.add_fp(
@@ -260,10 +321,19 @@ def _write_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
 
 # ----------------------------------------------------------------------------------------------------
 def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
+    """Reopen the written image and check its label, file names, and file contents.
+
+    Both name sets must equal the expected NoCloud files exactly, and each file read back
+    through its Rock Ridge path must match its input byte for byte.
+
+    Raises:
+        SeedBuildError: If any check fails or the image cannot be reopened.
+    """
     expected = sorted(contents)
     iso = pycdlib.PyCdlib()
     try:
         iso.open_fp(stream)
+        # The volume identifier is a fixed 32-byte field padded with spaces.
         label = iso.pvd.volume_identifier.decode("ascii").rstrip(" ")
         if label != SEED_LABEL:
             raise SeedBuildError("seed ISO has the wrong volume label", context={"label": label})
@@ -292,12 +362,18 @@ def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
     except PyCdlibException as e:
         raise SeedBuildError("cannot reopen the seed ISO for verification") from e
     finally:
+        # close() raises on an object that open_fp() never initialized; keep the original error.
         with contextlib.suppress(PyCdlibException):
             iso.close()
 
 
 # ----------------------------------------------------------------------------------------------------
 def _rock_ridge_names(iso: pycdlib.PyCdlib) -> list[str]:
+    """Return the Rock Ridge name of each root entry, the names Linux and cloud-init see.
+
+    Raises:
+        SeedBuildError: If an entry has no Rock Ridge name.
+    """
     names: list[str] = []
     for child in iso.list_children(rr_path="/"):
         if child.is_dot() or child.is_dotdot():

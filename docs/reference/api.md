@@ -40,3 +40,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.seed
 ```
+
+## QEMU backend
+
+```{eval-rst}
+.. automodule:: cloud_boot.vm
+```

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +167,34 @@ def test_unreadable_payload_file_is_a_preparation_failure(tmp_path: Path, kind: 
     assert raised.value.context["field"] == "user_data"
 
 
+def test_rejects_payload_fifo_without_blocking(tmp_path: Path) -> None:
+    scenario = tmp_path / "scenario"
+    scenario.mkdir()
+    fifo = scenario / "user-data.yaml"
+    os.mkfifo(fifo)
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            build(tmp_path, make_plan(user_data={"file": "user-data.yaml"}))
+        except BaseException as e:  # Handed to the main thread for assertions.
+            outcome.append(e)
+        else:
+            outcome.append(None)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():
+        # Release the blocked open() so the worker thread does not outlive the test.
+        os.close(os.open(fifo, os.O_WRONLY))
+        worker.join(timeout=5)
+        pytest.fail("opening a FIFO payload blocked until a writer appeared")
+
+    assert isinstance(outcome[0], SeedBuildError)
+    assert "not a regular file" in str(outcome[0])
+
+
 @pytest.mark.parametrize("source", ["inline", "file"])
 def test_rejects_oversized_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
@@ -181,7 +211,14 @@ def test_rejects_oversized_payload(
 
 @pytest.mark.parametrize(
     "key",
-    ["", "ssh-ed25519", " ssh-ed25519 AAAA", "ssh-ed25519 AAAA\ninstance-id: injected"],
+    [
+        "",
+        "ssh-ed25519",
+        " ssh-ed25519 AAAA",
+        "ssh-ed25519 AAAA\ninstance-id: injected",
+        "ssh-ed25519 AA\rAA",
+        "ssh-ed25519 AA\x00AA",
+    ],
 )
 def test_rejects_invalid_public_key(tmp_path: Path, key: str) -> None:
     with pytest.raises(SeedBuildError, match="SSH public key"):

@@ -136,7 +136,7 @@ def build_seed(
         SeedBuildError: If a payload cannot be read, exceeds the size limit, or the ISO cannot
             be written or fails verification.
     """
-    contents = _seed_contents(plan.seed, ssh_public_key, Path(scenario_dir))
+    contents = _collect_seed_contents(plan.seed, ssh_public_key, Path(scenario_dir))
     destination = Path(output_dir)
     try:
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -173,20 +173,22 @@ def build_seed(
 
 
 # ----------------------------------------------------------------------------------------------------
-def _seed_contents(seed: SeedSpec, ssh_public_key: str, scenario_dir: Path) -> dict[str, bytes]:
+def _collect_seed_contents(
+    seed: SeedSpec, ssh_public_key: str, scenario_dir: Path
+) -> dict[str, bytes]:
     """Return each NoCloud file's bytes, keyed by file name, in the order they are written."""
     contents = {
         "meta-data": render_meta_data(seed, ssh_public_key),
-        "user-data": _payload_bytes("user_data", seed.user_data, scenario_dir),
+        "user-data": _load_payload("user_data", seed.user_data, scenario_dir),
         # An empty vendor-data file is a valid "no vendor configuration" document.
         "vendor-data": (
             b""
             if seed.vendor_data is None
-            else _payload_bytes("vendor_data", seed.vendor_data, scenario_dir)
+            else _load_payload("vendor_data", seed.vendor_data, scenario_dir)
         ),
     }
     if seed.network_config is not None:
-        contents["network-config"] = _payload_bytes(
+        contents["network-config"] = _load_payload(
             "network_config", seed.network_config, scenario_dir
         )
     return contents
@@ -236,7 +238,7 @@ def _validate_public_key(key: str) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------
-def _payload_bytes(field: str, payload: PayloadSpec, scenario_dir: Path) -> bytes:
+def _load_payload(field: str, payload: PayloadSpec, scenario_dir: Path) -> bytes:
     """Return one payload's bytes, from inline text or a scenario-relative file.
 
     Raises:
@@ -337,7 +339,7 @@ def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
         label = iso.pvd.volume_identifier.decode("ascii").rstrip(" ")
         if label != SEED_LABEL:
             raise SeedBuildError("seed ISO has the wrong volume label", context={"label": label})
-        rock_ridge_names = sorted(_rock_ridge_names(iso))
+        rock_ridge_names = sorted(_read_rock_ridge_names(iso))
         joliet_names = sorted(
             child.file_identifier().decode("utf-16-be")
             for child in iso.list_children(joliet_path="/")
@@ -368,7 +370,7 @@ def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------
-def _rock_ridge_names(iso: pycdlib.PyCdlib) -> list[str]:
+def _read_rock_ridge_names(iso: pycdlib.PyCdlib) -> list[str]:
     """Return the Rock Ridge name of each root entry, the names Linux and cloud-init see.
 
     Raises:

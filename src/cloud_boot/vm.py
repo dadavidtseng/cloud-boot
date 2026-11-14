@@ -374,6 +374,16 @@ class QemuBackend:
                 },
             )
 
+    def _await_startup(self, process: ManagedProcess) -> CommandResult | None:
+        end = self._clock() + self._startup_window_seconds
+        while True:
+            if process.poll() is not None:
+                return process.wait(timeout=self._termination_seconds)
+            remaining = end - self._clock()
+            if remaining <= 0:
+                return None
+            self._sleeper(min(_POLL_INTERVAL_SECONDS, remaining))
+
     def stop(self, handle: VmHandle, *, deadline: float) -> StopResult:
         """Wait for QEMU to exit, then escalate to SIGTERM and SIGKILL within `deadline`.
 
@@ -398,13 +408,3 @@ class QemuBackend:
         result = process.stop(deadline=deadline)
         killed = result.returncode == -signal.SIGKILL
         return StopResult(StopReason.KILLED if killed else StopReason.TERMINATED, result)
-
-    def _await_startup(self, process: ManagedProcess) -> CommandResult | None:
-        end = self._clock() + self._startup_window_seconds
-        while True:
-            if process.poll() is not None:
-                return process.wait(timeout=self._termination_seconds)
-            remaining = end - self._clock()
-            if remaining <= 0:
-                return None
-            self._sleeper(min(_POLL_INTERVAL_SECONDS, remaining))

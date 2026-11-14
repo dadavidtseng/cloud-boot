@@ -196,6 +196,19 @@ def test_prepare_never_overwrites_an_existing_overlay(tmp_path: Path) -> None:
     assert (tmp_path / "overlay.qcow2").read_bytes() == b"guest state"
 
 
+@pytest.mark.parametrize("disk_gib", [0, -1, True, 8.0])
+def test_prepare_rejects_invalid_disk_size(tmp_path: Path, disk_gib: Any) -> None:
+    factory = FakeFactory([])
+    backend, _, _ = make_backend(factory)
+
+    with pytest.raises(ValueError, match="disk_gib"):
+        backend.prepare(
+            verified_image(tmp_path / "base.img"), tmp_path, disk_gib=disk_gib, deadline=30.0
+        )
+
+    assert factory.argvs == []
+
+
 def test_prepare_failure_is_a_preparation_error_and_removes_partial_overlay(
     tmp_path: Path,
 ) -> None:
@@ -238,6 +251,12 @@ def test_qemu_argv_escapes_commas_in_paths(tmp_path: Path) -> None:
     drive = build_qemu_argv(spec, 40001)[18]
 
     assert drive == f"file={tmp_path}/a,,b/run/overlay.qcow2,if=virtio,format=qcow2"
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_qemu_argv_rejects_invalid_ssh_port(tmp_path: Path, port: int) -> None:
+    with pytest.raises(ValueError, match="ssh_port"):
+        build_qemu_argv(launch_spec(tmp_path), port)
 
 
 @pytest.mark.parametrize(
@@ -316,6 +335,25 @@ def test_start_does_not_retry_other_startup_failures(tmp_path: Path) -> None:
     assert "Permission denied" in str(raised.value.context["stderr"])
 
 
+def test_interrupted_startup_stops_qemu(tmp_path: Path) -> None:
+    qemu = FakePopen()
+    factory = FakeFactory([qemu])
+    clock = FakeClock()
+    runner = CommandRunner(
+        clock=clock, sleeper=clock.sleep, popen_factory=factory, termination_grace_seconds=0.5
+    )
+
+    def interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    backend = QemuBackend(runner, port_allocator=lambda: 40001, clock=clock, sleeper=interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        backend.start(launch_spec(tmp_path))
+
+    assert qemu.signals_while_running == ["TERM"]
+
+
 def test_console_sink_failure_keeps_the_vm_running(tmp_path: Path) -> None:
     def failing_console(_chunk: bytes) -> None:
         raise OSError(28, "No space left on device")
@@ -380,6 +418,18 @@ def test_stop_raises_when_qemu_survives_sigkill(tmp_path: Path) -> None:
     assert raised.value.exit_code == ExitCode.TIMEOUT
     assert fake.signals_while_running == ["TERM", "KILL"]
     assert clock.now <= 30.0
+
+
+@pytest.mark.parametrize("deadline", [float("inf"), float("nan")])
+def test_stop_rejects_non_finite_deadline(deadline: float) -> None:
+    fake = FakePopen()
+    backend, runner, _ = make_backend(FakeFactory([fake]))
+    handle = running_handle(runner)
+
+    with pytest.raises(ValueError, match="finite"):
+        backend.stop(handle, deadline=deadline)
+
+    assert fake.signals_while_running == []
 
 
 def test_allocate_loopback_port_returns_a_bindable_loopback_port() -> None:

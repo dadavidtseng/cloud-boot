@@ -79,8 +79,6 @@ class SeedArtifact:
     """A verified NoCloud seed ISO and the identity of each file it contains."""
 
     path: Path
-    label: str
-    instance_id: str
     files: tuple[SeedFile, ...]
 
 
@@ -129,7 +127,7 @@ def build_seed(
         output_dir: Run directory that receives `seed.iso`; created with mode 0700 if missing.
 
     Returns:
-        The verified seed's path, label, instance ID, and per-file SHA-256 digests.
+        The verified seed's path and per-file SHA-256 digests.
 
     Raises:
         SeedBuildError: If a payload cannot be read, exceeds the size limit, or the ISO cannot
@@ -161,8 +159,6 @@ def build_seed(
             temporary_path.unlink()
     return SeedArtifact(
         path=final_path,
-        label=SEED_LABEL,
-        instance_id=plan.seed.instance_id,
         files=tuple(
             SeedFile(name=name, sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
             for name, data in contents.items()

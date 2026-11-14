@@ -176,9 +176,7 @@ class Harness:
         self._step("seed")
         path = output_dir / "seed.iso"
         path.write_bytes(b"iso")
-        return SeedArtifact(
-            path, "CIDATA", plan.seed.instance_id, (SeedFile("meta-data", "a" * 64, 1),)
-        )
+        return SeedArtifact(path, (SeedFile("meta-data", "a" * 64, 1),))
 
     def prepare(
         self, image: VerifiedImage, run_dir: str | Path, *, disk_gib: int, deadline: float

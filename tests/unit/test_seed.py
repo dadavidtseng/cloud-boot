@@ -73,8 +73,7 @@ def test_builds_cidata_iso_with_exact_nocloud_files(tmp_path: Path) -> None:
     label, files, joliet = read_iso(artifact.path)
 
     assert artifact.path == tmp_path / "run" / "seed.iso"
-    assert artifact.label == label == "CIDATA"
-    assert artifact.instance_id == "cloud-boot-basic-001"
+    assert label == "CIDATA"
     assert sorted(files) == joliet == ["meta-data", "user-data", "vendor-data"]
     assert [entry.name for entry in artifact.files] == ["meta-data", "user-data", "vendor-data"]
     for entry in artifact.files:

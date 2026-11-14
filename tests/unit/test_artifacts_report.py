@@ -330,8 +330,6 @@ def test_write_report_persists_portable_evidence(tmp_path: Path) -> None:
     )
     seed = SeedArtifact(
         path=run.transient_dir / "seed.iso",
-        label="CIDATA",
-        instance_id="i-1",
         files=(SeedFile("meta-data", "a" * 64, 10), SeedFile("user-data", "b" * 64, 20)),
     )
     results = [assertion()]
@@ -349,7 +347,7 @@ def test_write_report_persists_portable_evidence(tmp_path: Path) -> None:
                 BootResult(
                     name="boot",
                     index=1,
-                    instance_id=seed.instance_id,
+                    instance_id="i-1",
                     seed_digests=seed_digests(seed),
                     stop_reason="exited",
                     assertions=results,

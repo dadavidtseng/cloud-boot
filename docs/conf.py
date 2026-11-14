@@ -29,6 +29,8 @@ autodoc_default_options = {
     "members": True,
     "private-members": True,
     "show-inheritance": True,
+    # Otherwise `__all__` decides which module members appear, and in what order.
+    "ignore-module-all": True,
 }
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"

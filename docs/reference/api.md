@@ -34,3 +34,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.image_store
 ```
+
+## Seed media
+
+```{eval-rst}
+.. automodule:: cloud_boot.seed
+```

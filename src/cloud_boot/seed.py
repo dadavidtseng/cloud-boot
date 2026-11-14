@@ -227,7 +227,11 @@ def _read_payload_file(field: str, relative: str, scenario_dir: Path) -> bytes:
             f"{field} payload file resolves outside the scenario directory", context=context
         )
     try:
-        descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        # `candidate` is already resolved, so O_NOFOLLOW only catches its last component being
+        # swapped for a symlink after the check above. O_NONBLOCK keeps a FIFO from blocking
+        # open() until a writer appears, so the regular-file check below can reject it. It has no
+        # effect on regular files.
+        descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         with os.fdopen(descriptor, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise SeedBuildError(f"{field} payload is not a regular file", context=context)

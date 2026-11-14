@@ -83,30 +83,6 @@ class SeedArtifact:
 
 
 # ----------------------------------------------------------------------------------------------------
-def render_meta_data(seed: SeedSpec, ssh_public_key: str) -> bytes:
-    """Serialize harness-owned NoCloud metadata.
-
-    Args:
-        seed: Seed inputs supplying the instance ID and optional hostname.
-        ssh_public_key: The run's single-line OpenSSH public key.
-
-    Returns:
-        UTF-8 YAML containing `instance-id`, optional `local-hostname`, and `public-keys`.
-
-    Raises:
-        SeedBuildError: If the public key is empty or spans more than one line.
-    """
-    _validate_public_key(ssh_public_key)
-    document: dict[str, object] = {"instance-id": seed.instance_id}
-    if seed.local_hostname is not None:
-        document["local-hostname"] = seed.local_hostname
-    document["public-keys"] = [ssh_public_key]
-    # A large width keeps PyYAML from folding long keys across lines.
-    rendered = yaml.safe_dump(document, sort_keys=False, default_flow_style=False, width=1 << 16)
-    return rendered.encode("utf-8")
-
-
-# ----------------------------------------------------------------------------------------------------
 def build_seed(
     plan: BootPlan,
     *,
@@ -167,14 +143,6 @@ def build_seed(
 
 
 # ----------------------------------------------------------------------------------------------------
-def _validate_public_key(key: str) -> None:
-    if not key or key != key.strip() or any(character in key for character in "\r\n\x00"):
-        raise SeedBuildError("SSH public key must be one non-empty line")
-    if len(key.split()) < 2:
-        raise SeedBuildError("SSH public key must contain a key type and key data")
-
-
-# ----------------------------------------------------------------------------------------------------
 def _seed_contents(seed: SeedSpec, ssh_public_key: str, scenario_dir: Path) -> dict[str, bytes]:
     contents = {
         "meta-data": render_meta_data(seed, ssh_public_key),
@@ -191,6 +159,38 @@ def _seed_contents(seed: SeedSpec, ssh_public_key: str, scenario_dir: Path) -> d
             "network_config", seed.network_config, scenario_dir
         )
     return contents
+
+
+# ----------------------------------------------------------------------------------------------------
+def render_meta_data(seed: SeedSpec, ssh_public_key: str) -> bytes:
+    """Serialize harness-owned NoCloud metadata.
+
+    Args:
+        seed: Seed inputs supplying the instance ID and optional hostname.
+        ssh_public_key: The run's single-line OpenSSH public key.
+
+    Returns:
+        UTF-8 YAML containing `instance-id`, optional `local-hostname`, and `public-keys`.
+
+    Raises:
+        SeedBuildError: If the public key is empty or spans more than one line.
+    """
+    _validate_public_key(ssh_public_key)
+    document: dict[str, object] = {"instance-id": seed.instance_id}
+    if seed.local_hostname is not None:
+        document["local-hostname"] = seed.local_hostname
+    document["public-keys"] = [ssh_public_key]
+    # A large width keeps PyYAML from folding long keys across lines.
+    rendered = yaml.safe_dump(document, sort_keys=False, default_flow_style=False, width=1 << 16)
+    return rendered.encode("utf-8")
+
+
+# ----------------------------------------------------------------------------------------------------
+def _validate_public_key(key: str) -> None:
+    if not key or key != key.strip() or any(character in key for character in "\r\n\x00"):
+        raise SeedBuildError("SSH public key must be one non-empty line")
+    if len(key.split()) < 2:
+        raise SeedBuildError("SSH public key must contain a key type and key data")
 
 
 # ----------------------------------------------------------------------------------------------------

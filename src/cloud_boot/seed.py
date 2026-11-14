@@ -40,7 +40,7 @@ SEED_FILENAME = "seed.iso"
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 
 # NoCloud reads these Rock Ridge/Joliet names; each needs an ISO-9660 level-1 (8.3) alias.
-_ISO_NAMES: Mapping[str, str] = {
+_LEVEL1_PATHS: Mapping[str, str] = {
     "meta-data": "/METADATA.;1",
     "user-data": "/USERDATA.;1",
     "vendor-data": "/VENDORDA.;1",
@@ -245,7 +245,7 @@ def _write_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
             iso.add_fp(
                 io.BytesIO(data),
                 len(data),
-                iso_path=_ISO_NAMES[name],
+                iso_path=_LEVEL1_PATHS[name],
                 rr_name=name,
                 joliet_path=f"/{name}",
             )
@@ -253,7 +253,9 @@ def _write_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
     except PyCdlibException as e:
         raise SeedBuildError("cannot build the seed ISO") from e
     finally:
-        iso.close()
+        # close() raises on an object that new() never initialized; keep the original error.
+        with contextlib.suppress(PyCdlibException):
+            iso.close()
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -283,7 +285,7 @@ def _verify_iso(contents: Mapping[str, bytes], stream: BinaryIO) -> None:
         for name, data in contents.items():
             extracted = io.BytesIO()
             iso.get_file_from_iso_fp(extracted, rr_path=f"/{name}")
-            if hashlib.sha256(extracted.getvalue()).digest() != hashlib.sha256(data).digest():
+            if extracted.getvalue() != data:
                 raise SeedBuildError(
                     "seed ISO content does not match its input", context={"file": name}
                 )

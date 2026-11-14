@@ -310,9 +310,7 @@ def _payloads(seed: SeedSpec) -> tuple[tuple[str, PayloadSpec], ...]:
 
 
 # ----------------------------------------------------------------------------------------------------
-def _validate_payload_containment(
-    scenario: ScenarioV1, scenario_directory: Path
-) -> list[ScenarioIssue]:
+def _validate_payload_containment(scenario: ScenarioV1, scenario_dir: Path) -> list[ScenarioIssue]:
     """Check that each payload file, after resolving symlinks, is a regular file in the directory.
 
     This is the second of the three containment checks described in
@@ -320,7 +318,7 @@ def _validate_payload_containment(
     misplaced file fails validation before any image is downloaded. `cloud_boot.seed` checks
     again when it reads the file, since the file can change in between.
     """
-    root = scenario_directory.resolve()
+    root = scenario_dir.resolve()
     issues: list[ScenarioIssue] = []
 
     for field_name, payload in _payloads(scenario.seed):

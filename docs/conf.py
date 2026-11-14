@@ -31,6 +31,9 @@ autodoc_default_options = {
     "show-inheritance": True,
     # Otherwise `__all__` decides which module members appear, and in what order.
     "ignore-module-all": True,
+    # Inherited internals, not ours: every StrEnum gets `_generate_next_value_`, and Pydantic sets
+    # `model_config` on each model; `StrictModel`'s docstring already explains its settings.
+    "exclude-members": "_generate_next_value_, model_config",
 }
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"

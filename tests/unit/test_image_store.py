@@ -29,7 +29,7 @@ from cloud_boot.process import CommandRunner
 IMAGE_NAME = "noble-server-cloudimg-amd64.img"
 IMAGE_BYTES = b"cloud-boot image\n"
 IMAGE_DIGEST = hashlib.sha256(IMAGE_BYTES).hexdigest()
-MANIFEST = f"{IMAGE_DIGEST} *{IMAGE_NAME}\n"
+CHECKSUMS = f"{IMAGE_DIGEST} *{IMAGE_NAME}\n"
 
 
 class FakeResponse(io.BytesIO):
@@ -85,9 +85,9 @@ def record_sleeps(sleeps: list[float]) -> Callable[[float, threading.Event | Non
 
 
 def test_downloads_streams_verifies_and_writes_metadata(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
     )
     image = store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
 
@@ -102,23 +102,23 @@ def test_downloads_streams_verifies_and_writes_metadata(tmp_path: Path) -> None:
 
 
 def test_reuses_valid_cache_without_downloading(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
     )
     image_store = store(tmp_path, downloader, base_url="https://images.test/noble/current/")
     first = image_store.resolve()
     second = image_store.resolve()
 
     assert second == first
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
 
 
 def test_rehashes_corrupt_cache_before_redownloading(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode()), FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode()), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES), FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -127,13 +127,13 @@ def test_rehashes_corrupt_cache_before_redownloading(tmp_path: Path) -> None:
     image = image_store.resolve()
 
     assert image.path.read_bytes() == IMAGE_BYTES
-    assert downloader.calls == [manifest_url, image_url, manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url, checksums_url, image_url]
 
 
 def test_rejects_digest_mismatch_and_leaves_no_partial(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(b"wrong")]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(b"wrong")]}
     )
     image_store = store(tmp_path, downloader, base_url="https://images.test/noble/current/")
 
@@ -146,7 +146,7 @@ def test_rejects_digest_mismatch_and_leaves_no_partial(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "manifest",
+    "checksums",
     [
         f"{IMAGE_DIGEST}  other.img\n",
         f"{IMAGE_DIGEST}  {IMAGE_NAME}\n{IMAGE_DIGEST}  {IMAGE_NAME}\n",
@@ -155,18 +155,18 @@ def test_rejects_digest_mismatch_and_leaves_no_partial(tmp_path: Path) -> None:
         f"not-a-checksum  {IMAGE_NAME}\n",
     ],
 )
-def test_rejects_invalid_or_unsafe_manifest(tmp_path: Path, manifest: str) -> None:
-    manifest_url, _ = urls()
-    downloader = FakeDownloader({manifest_url: [FakeResponse(manifest.encode())]})
+def test_rejects_invalid_or_unsafe_checksums(tmp_path: Path, checksums: str) -> None:
+    checksums_url, _ = urls()
+    downloader = FakeDownloader({checksums_url: [FakeResponse(checksums.encode())]})
 
     with pytest.raises(ImageStoreError):
         store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
 
 
 def test_rejects_oversized_image_and_cleans_partial(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
     )
 
     with pytest.raises(ImageStoreError, match="size limit"):
@@ -180,10 +180,10 @@ def test_rejects_oversized_image_and_cleans_partial(tmp_path: Path) -> None:
 
 
 def test_interrupted_image_download_cleans_partial(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [FailingResponse(IMAGE_BYTES, fail_after=4)],
         }
     )
@@ -195,11 +195,11 @@ def test_interrupted_image_download_cleans_partial(tmp_path: Path) -> None:
 
 
 def test_body_shorter_than_content_length_is_a_closed_connection(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     declared = {"Content-Length": str(len(IMAGE_BYTES))}
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES[:5], headers=declared)],
         }
     )
@@ -214,10 +214,10 @@ def test_body_shorter_than_content_length_is_a_closed_connection(tmp_path: Path)
 
 
 def test_invalid_content_length_is_ignored(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES, headers={"Content-Length": "abc"})],
         }
     )
@@ -227,11 +227,11 @@ def test_invalid_content_length_is_ignored(tmp_path: Path) -> None:
     assert image.digest == IMAGE_DIGEST
 
 
-def test_manifest_size_limit_fails_before_image_download(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+def test_checksums_size_limit_fails_before_image_download(tmp_path: Path) -> None:
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse((MANIFEST * 2).encode())],
+            checksums_url: [FakeResponse((CHECKSUMS * 2).encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -241,16 +241,16 @@ def test_manifest_size_limit_fails_before_image_download(tmp_path: Path) -> None
             tmp_path,
             downloader,
             base_url="https://images.test/noble/current/",
-            max_manifest_bytes=len(MANIFEST),
+            max_checksums_bytes=len(CHECKSUMS),
         ).resolve()
-    assert downloader.calls == [manifest_url]
+    assert downloader.calls == [checksums_url]
 
 
 def test_failed_refresh_preserves_old_metadata_and_no_final_replacement(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode()), FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode()), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES), FailingResponse(b"new", fail_after=1)],
         }
     )
@@ -267,9 +267,9 @@ def test_failed_refresh_preserves_old_metadata_and_no_final_replacement(tmp_path
 
 
 def test_uses_per_release_lock_file(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
     )
 
     store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
@@ -278,11 +278,11 @@ def test_uses_per_release_lock_file(tmp_path: Path) -> None:
 
 
 def test_retries_transient_http_failure_with_bounded_backoff(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     sleeps: list[float] = []
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(b"", status=503), FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(b"", status=503), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -299,11 +299,11 @@ def test_retries_transient_http_failure_with_bounded_backoff(tmp_path: Path) -> 
 
 
 def test_retries_connection_failure_but_not_client_error(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     sleeps: list[float] = []
     downloader = FakeDownloader(
         {
-            manifest_url: [ConnectionError("temporary"), FakeResponse(MANIFEST.encode())],
+            checksums_url: [ConnectionError("temporary"), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -315,17 +315,17 @@ def test_retries_connection_failure_but_not_client_error(tmp_path: Path) -> None
     ).resolve()
     assert image.digest == IMAGE_DIGEST
     assert sleeps == [0.5]
-    assert downloader.calls == [manifest_url, manifest_url, image_url]
+    assert downloader.calls == [checksums_url, checksums_url, image_url]
 
 
 def test_respects_retry_after_header(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     sleeps: list[float] = []
     downloader = FakeDownloader(
         {
-            manifest_url: [
+            checksums_url: [
                 FakeResponse(b"", status=429, headers={"Retry-After": "2"}),
-                FakeResponse(MANIFEST.encode()),
+                FakeResponse(CHECKSUMS.encode()),
             ],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
@@ -341,18 +341,18 @@ def test_respects_retry_after_header(tmp_path: Path) -> None:
 
 
 def test_does_not_retry_client_error(tmp_path: Path) -> None:
-    manifest_url, _ = urls()
-    downloader = FakeDownloader({manifest_url: [FakeResponse(b"", status=404)]})
+    checksums_url, _ = urls()
+    downloader = FakeDownloader({checksums_url: [FakeResponse(b"", status=404)]})
 
     with pytest.raises(ImageStoreError, match="HTTP 404"):
         store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
-    assert downloader.calls == [manifest_url]
+    assert downloader.calls == [checksums_url]
 
 
 def test_injected_clock_and_command_boundary_are_accepted(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
-        {manifest_url: [FakeResponse(MANIFEST.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
+        {checksums_url: [FakeResponse(CHECKSUMS.encode())], image_url: [FakeResponse(IMAGE_BYTES)]}
     )
     image = store(
         tmp_path,
@@ -398,20 +398,20 @@ class AdvancingResponse(FakeResponse):
 
 
 @pytest.mark.parametrize("separator", [" *", "  "])
-def test_parses_real_manifest_modes_and_selects_exact_basename(
+def test_parses_real_checksums_modes_and_selects_exact_basename(
     tmp_path: Path, separator: str
 ) -> None:
     # Ubuntu's binary-mode layout, including variants that must not be selected.
-    manifest = (
+    checksums = (
         "00b9709d33192c8cfb987fd9522e9a035c73fd125c5a479b125b5d26ffafec67"
         " *noble-server-cloudimg-amd64.squashfs\n"
         f"{'1' * 64} *noble-server-cloudimg-arm64.img\n"
         f"{IMAGE_DIGEST.upper()}{separator}{IMAGE_NAME}\n"
     )
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(manifest.encode())],
+            checksums_url: [FakeResponse(checksums.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -419,24 +419,24 @@ def test_parses_real_manifest_modes_and_selects_exact_basename(
     result = store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
 
     assert result.digest == IMAGE_DIGEST
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
 
 
 @pytest.mark.parametrize("name", ["../bad.img", r"..\bad.img", ".", "..", "/bad.img", "bad name.img"])
-def test_rejects_unsafe_binary_manifest_names(tmp_path: Path, name: str) -> None:
-    manifest_url, _ = urls()
-    manifest = f"{IMAGE_DIGEST} *{name}\n{MANIFEST}"
-    downloader = FakeDownloader({manifest_url: [FakeResponse(manifest.encode())]})
+def test_rejects_unsafe_binary_checksums_names(tmp_path: Path, name: str) -> None:
+    checksums_url, _ = urls()
+    checksums = f"{IMAGE_DIGEST} *{name}\n{CHECKSUMS}"
+    downloader = FakeDownloader({checksums_url: [FakeResponse(checksums.encode())]})
 
     with pytest.raises(ImageStoreError, match=r"(invalid|unsafe) SHA256SUMS"):
         store(tmp_path, downloader, base_url="https://images.test/noble/current/").resolve()
 
 
 def test_cleans_crash_leftovers_even_on_cache_hit(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -458,7 +458,7 @@ def test_cleans_crash_leftovers_even_on_cache_hit(tmp_path: Path) -> None:
     assert not metadata.exists()
     assert not link.is_symlink()
     assert outside.read_bytes() == b"do not touch"
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
@@ -487,15 +487,15 @@ def test_undeletable_leftover_is_a_preparation_failure(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("status", [429, 503])
 def test_retries_real_urllib_http_errors(tmp_path: Path, status: int) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     headers = Message()
     headers["Retry-After"] = "2"
     error_body = io.BytesIO(b"busy")
-    error = HTTPError(manifest_url, status, "busy", headers, error_body)
+    error = HTTPError(checksums_url, status, "busy", headers, error_body)
     sleeps: list[float] = []
     downloader = FakeDownloader(
         {
-            manifest_url: [error, FakeResponse(MANIFEST.encode())],
+            checksums_url: [error, FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -510,14 +510,14 @@ def test_retries_real_urllib_http_errors(tmp_path: Path, status: int) -> None:
     assert result.digest == IMAGE_DIGEST
     assert sleeps == [2.0]
     assert error_body.closed
-    assert downloader.calls == [manifest_url, manifest_url, image_url]
+    assert downloader.calls == [checksums_url, checksums_url, image_url]
 
 
 def test_real_urllib_404_is_closed_and_not_retried(tmp_path: Path) -> None:
-    manifest_url, _ = urls()
+    checksums_url, _ = urls()
     error_body = io.BytesIO(b"missing")
     downloader = FakeDownloader(
-        {manifest_url: [HTTPError(manifest_url, 404, "missing", Message(), error_body)]}
+        {checksums_url: [HTTPError(checksums_url, 404, "missing", Message(), error_body)]}
     )
     sleeps: list[float] = []
 
@@ -529,7 +529,7 @@ def test_real_urllib_404_is_closed_and_not_retried(tmp_path: Path) -> None:
             sleeper=record_sleeps(sleeps),
         ).resolve()
 
-    assert downloader.calls == [manifest_url]
+    assert downloader.calls == [checksums_url]
     assert sleeps == []
     assert error_body.closed
 
@@ -554,10 +554,10 @@ def test_contending_resolvers_download_once(tmp_path: Path, monkeypatch: pytest.
                 raise TimeoutError("test did not release download")
             return super().read(size)
 
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [GatedResponse(IMAGE_BYTES)],
         }
     )
@@ -576,7 +576,7 @@ def test_contending_resolvers_download_once(tmp_path: Path, monkeypatch: pytest.
             release.set()
         assert pending_first.result(timeout=3) == pending_second.result(timeout=3)
 
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
 
 
 def test_lock_deadline_uses_fake_clock_and_preserves_live_partials(tmp_path: Path) -> None:
@@ -609,17 +609,17 @@ def test_lock_deadline_uses_fake_clock_and_preserves_live_partials(tmp_path: Pat
     assert downloader.calls == []
 
 
-@pytest.mark.parametrize("phase", ["manifest", "image"])
+@pytest.mark.parametrize("phase", ["checksums", "image"])
 def test_download_deadline_with_fake_clock_cleans_partial(tmp_path: Path, phase: str) -> None:
     clock = FakeClock()
-    manifest_url, image_url = urls()
-    manifest = (
-        AdvancingResponse(MANIFEST.encode(), clock)
-        if phase == "manifest"
-        else FakeResponse(MANIFEST.encode())
+    checksums_url, image_url = urls()
+    checksums = (
+        AdvancingResponse(CHECKSUMS.encode(), clock)
+        if phase == "checksums"
+        else FakeResponse(CHECKSUMS.encode())
     )
     image = AdvancingResponse(IMAGE_BYTES, clock) if phase == "image" else FakeResponse(IMAGE_BYTES)
-    downloader = FakeDownloader({manifest_url: [manifest], image_url: [image]})
+    downloader = FakeDownloader({checksums_url: [checksums], image_url: [image]})
 
     with pytest.raises(ImageStoreError, match="timed out") as raised:
         store(
@@ -638,12 +638,12 @@ def test_download_deadline_with_fake_clock_cleans_partial(tmp_path: Path, phase:
     assert not (tmp_path / "cache" / "releases" / "noble.json").exists()
 
 
-def test_manifest_and_image_share_one_budget(tmp_path: Path) -> None:
+def test_checksums_and_image_share_one_budget(tmp_path: Path) -> None:
     clock = FakeClock()
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [AdvancingResponse(MANIFEST.encode(), clock)],
+            checksums_url: [AdvancingResponse(CHECKSUMS.encode(), clock)],
             image_url: [AdvancingResponse(IMAGE_BYTES, clock)],
         }
     )
@@ -658,17 +658,19 @@ def test_manifest_and_image_share_one_budget(tmp_path: Path) -> None:
         ).resolve()
 
     assert clock.now == pytest.approx(1.0)
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
     assert not list((tmp_path / "cache").glob(".partial-*"))
     assert not (tmp_path / "cache" / "releases" / "noble.json").exists()
 
 
 def test_retry_backoff_cannot_extend_parent_deadline(tmp_path: Path) -> None:
     clock = FakeClock()
-    manifest_url, _ = urls()
+    checksums_url, _ = urls()
     headers = Message()
     headers["Retry-After"] = "60"
-    downloader = FakeDownloader({manifest_url: [HTTPError(manifest_url, 503, "busy", headers, None)]})
+    downloader = FakeDownloader(
+        {checksums_url: [HTTPError(checksums_url, 503, "busy", headers, None)]}
+    )
     sleeps: list[float] = []
 
     def advance(seconds: float, _cancelled: threading.Event | None) -> None:
@@ -685,17 +687,17 @@ def test_retry_backoff_cannot_extend_parent_deadline(tmp_path: Path) -> None:
         ).resolve(deadline=0.25)
 
     assert sleeps == [0.25]
-    assert downloader.calls == [manifest_url]
+    assert downloader.calls == [checksums_url]
 
 
 @pytest.mark.parametrize("digest", ["../../outside", "..\\..\\outside", None, ["invalid"]])
 def test_tampered_metadata_digest_is_rejected_before_path_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, digest: object
 ) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode()), FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode()), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES), FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -717,17 +719,17 @@ def test_tampered_metadata_digest_is_rejected_before_path_access(
     result = image_store.resolve()
 
     assert result.digest == IMAGE_DIGEST
-    assert downloader.calls == [manifest_url, image_url, manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url, checksums_url, image_url]
     assert all(".." not in path.parts for path in opened)
     assert all("outside" not in str(path) for path in opened)
 
 
 def test_cache_rehash_obeys_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     downloader = FakeDownloader(
         {
-            manifest_url: [FakeResponse(MANIFEST.encode())],
+            checksums_url: [FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -751,7 +753,7 @@ def test_cache_rehash_obeys_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(ImageStoreError, match=r"timed out.*cached image"):
         image_store.resolve(deadline=0.5)
 
-    assert downloader.calls == [manifest_url, image_url]
+    assert downloader.calls == [checksums_url, image_url]
 
 
 @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan")])
@@ -773,7 +775,7 @@ def test_expired_deadline_does_not_create_cache(tmp_path: Path) -> None:
     assert not cache.exists()
 
 
-@pytest.mark.parametrize("phase", ["headers", "manifest", "image"])
+@pytest.mark.parametrize("phase", ["headers", "checksums", "image"])
 def test_default_downloader_bounds_blocked_http_operations(tmp_path: Path, phase: str) -> None:
     blocked = threading.Event()
     release = threading.Event()
@@ -781,9 +783,9 @@ def test_default_downloader_bounds_blocked_http_operations(tmp_path: Path, phase
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            is_manifest = self.path.endswith("SHA256SUMS")
-            data = MANIFEST.encode() if is_manifest else IMAGE_BYTES
-            should_block = phase != "image" or not is_manifest
+            is_checksums = self.path.endswith("SHA256SUMS")
+            data = CHECKSUMS.encode() if is_checksums else IMAGE_BYTES
+            should_block = phase != "image" or not is_checksums
             try:
                 if should_block and phase == "headers":
                     blocked.set()
@@ -836,11 +838,11 @@ def test_default_downloader_bounds_blocked_http_operations(tmp_path: Path, phase
 
 
 def test_retry_backoff_receives_the_download_cancellation_event(tmp_path: Path) -> None:
-    manifest_url, image_url = urls()
+    checksums_url, image_url = urls()
     waits: list[tuple[float, threading.Event | None]] = []
     downloader = FakeDownloader(
         {
-            manifest_url: [ConnectionError("temporary"), FakeResponse(MANIFEST.encode())],
+            checksums_url: [ConnectionError("temporary"), FakeResponse(CHECKSUMS.encode())],
             image_url: [FakeResponse(IMAGE_BYTES)],
         }
     )
@@ -856,7 +858,7 @@ def test_retry_backoff_receives_the_download_cancellation_event(tmp_path: Path) 
     seconds, cancelled = waits[0]
     assert seconds == 0.5
     assert isinstance(cancelled, threading.Event)
-    # Closing the manifest stream cancels its producer, which wakes a default backoff.
+    # Closing the SHA256SUMS stream cancels its producer, which wakes a default backoff.
     assert cancelled.is_set()
 
 

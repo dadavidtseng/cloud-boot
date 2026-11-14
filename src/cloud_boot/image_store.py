@@ -5,7 +5,7 @@
 """Checksum-verified Ubuntu cloud-image download and cache primitives.
 
 `ImageStore.resolve` returns a `VerifiedImage` whose bytes match the SHA-256 listed in the
-release's `SHA256SUMS`. The manifest itself is not yet signature-checked (Task 12 adds `gpgv`),
+release's `SHA256SUMS`. That file itself is not yet signature-checked (Task 12 adds `gpgv`),
 so results are `checksum_verified` but never `signature_authenticated`.
 
 Cache layout under `cache_dir`::
@@ -50,14 +50,14 @@ __all__ = ["ImageStore", "ImageStoreError", "VerifiedImage"]
 # ----------------------------------------------------------------------------------------------------
 DEFAULT_BASE_URL = "https://cloud-images.ubuntu.com/noble/current/"
 DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024 * 1024  # Noble images are about 600 MB.
-DEFAULT_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+DEFAULT_MAX_CHECKSUMS_BYTES = 8 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_RETRY_ATTEMPTS = 3  # Total attempts, including the first.
 DEFAULT_RESOLVE_TIMEOUT_SECONDS = 30 * 60.0
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 # One `sha256sum` output line: digest, then " " (text mode) or "*" (binary mode),
 # then a bare filename with no directory part.
-MANIFEST_LINE_PATTERN = re.compile(r"^([0-9a-fA-F]{64}) [ *]([^\s/\\]+)$")
+CHECKSUM_LINE_PATTERN = re.compile(r"^([0-9a-fA-F]{64}) [ *]([^\s/\\]+)$")
 
 # ----------------------------------------------------------------------------------------------------
 # Sleeps up to the given seconds, returning early once the event is set; the result is ignored, so
@@ -170,7 +170,7 @@ class ImageStore:
         sleeper: Waits between lock polls and download retries.
         base_url: Directory holding the image and `SHA256SUMS`.
         max_image_bytes: Largest image accepted, downloaded or cached.
-        max_manifest_bytes: Largest `SHA256SUMS` accepted.
+        max_checksums_bytes: Largest `SHA256SUMS` accepted.
         chunk_size: Bytes per read, and the most the downloader may return at once.
         retry_attempts: Total download attempts per URL, including the first.
         retry_base_seconds: First backoff delay; doubles on each attempt.
@@ -191,14 +191,14 @@ class ImageStore:
         sleeper: CancellableSleeper = _sleep_until_cancelled,
         base_url: str = DEFAULT_BASE_URL,
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
-        max_manifest_bytes: int = DEFAULT_MAX_MANIFEST_BYTES,
+        max_checksums_bytes: int = DEFAULT_MAX_CHECKSUMS_BYTES,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
         retry_base_seconds: float = 0.5,
         resolve_timeout_seconds: float = DEFAULT_RESOLVE_TIMEOUT_SECONDS,
     ) -> None:
-        if max_image_bytes <= 0 or max_manifest_bytes <= 0 or chunk_size <= 0:
-            raise ValueError("image and manifest limits and chunk size must be positive")
+        if max_image_bytes <= 0 or max_checksums_bytes <= 0 or chunk_size <= 0:
+            raise ValueError("image and checksum-file limits and chunk size must be positive")
         if retry_attempts <= 0 or retry_base_seconds < 0 or not math.isfinite(retry_base_seconds):
             raise ValueError(
                 "retry attempts must be positive and the retry base delay finite and non-negative"
@@ -215,7 +215,7 @@ class ImageStore:
         # Exactly one trailing slash, so filenames can be appended directly.
         self._base_url = base_url.rstrip("/") + "/"
         self._max_image_bytes = max_image_bytes
-        self._max_manifest_bytes = max_manifest_bytes
+        self._max_checksums_bytes = max_checksums_bytes
         self._chunk_size = chunk_size
         self._retry_attempts = retry_attempts
         self._retry_base_seconds = retry_base_seconds
@@ -420,10 +420,10 @@ class ImageStore:
         Nothing is written until `SHA256SUMS` names the image. The partial file is removed on any
         failure, so the cache holds only verified images.
         """
-        manifest_url = f"{self._base_url}SHA256SUMS"
+        checksums_url = f"{self._base_url}SHA256SUMS"
         image_url = f"{self._base_url}{basename}"
-        manifest = self._read_manifest(manifest_url, deadline)
-        expected_digest = self._parse_manifest(manifest, basename)
+        checksums = self._read_checksums(checksums_url, deadline)
+        expected_digest = self._parse_checksums(checksums, basename)
         partial_path: Path | None = None
 
         try:
@@ -464,20 +464,20 @@ class ImageStore:
                 with contextlib.suppress(FileNotFoundError):
                     partial_path.unlink()
 
-    def _read_manifest(self, url: str, deadline: float) -> bytes:
-        """Download `SHA256SUMS` into memory, refusing more than `max_manifest_bytes`."""
+    def _read_checksums(self, url: str, deadline: float) -> bytes:
+        """Download `SHA256SUMS` into memory, refusing more than `max_checksums_bytes`."""
         data = bytearray()
         with contextlib.closing(self._download_chunks(url, deadline)) as chunks:
             for chunk in chunks:
-                if len(data) + len(chunk) > self._max_manifest_bytes:
+                if len(data) + len(chunk) > self._max_checksums_bytes:
                     raise ImageStoreError("SHA256SUMS exceeds the configured size limit")
                 data.extend(chunk)
         return bytes(data)
 
-    def _parse_manifest(self, data: bytes, basename: str) -> str:
+    def _parse_checksums(self, data: bytes, basename: str) -> str:
         """Return the lowercase digest that `SHA256SUMS` lists for `basename`.
 
-        The whole manifest must look like `sha256sum` output: one malformed or unsafe line, or a
+        The whole file must look like `sha256sum` output: one malformed or unsafe line, or a
         duplicate entry for `basename`, rejects it.
         """
         try:
@@ -488,12 +488,12 @@ class ImageStore:
         for line_number, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
                 continue
-            match = MANIFEST_LINE_PATTERN.fullmatch(line)
+            match = CHECKSUM_LINE_PATTERN.fullmatch(line)
             if match is None:
                 raise ImageStoreError(f"invalid SHA256SUMS entry on line {line_number}")
             digest, name = match.groups()
             # Names are only compared with `basename`, never used as paths. These checks reject
-            # manifests that do not look like Ubuntu's, and back up the pattern if it is loosened.
+            # checksum files unlike Ubuntu's, and back up the pattern if it is loosened.
             if (
                 PurePosixPath(name).name != name
                 or PureWindowsPath(name).name != name

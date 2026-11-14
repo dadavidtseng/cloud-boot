@@ -238,7 +238,7 @@ def _option_path(path: Path) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------
-def _tail(data: bytes) -> str:
+def _stderr_tail(data: bytes) -> str:
     return data[-_STDERR_CONTEXT_BYTES:].decode("utf-8", errors="replace")
 
 
@@ -318,7 +318,7 @@ class QemuBackend:
             overlay.unlink(missing_ok=True)
             raise OverlayError(
                 "qemu-img could not create the overlay",
-                context={"returncode": result.returncode, "stderr": _tail(result.stderr)},
+                context={"returncode": result.returncode, "stderr": _stderr_tail(result.stderr)},
             )
         return DiskArtifact(path=overlay)
 
@@ -368,7 +368,7 @@ class QemuBackend:
                 message,
                 context={
                     "returncode": early_exit.returncode,
-                    "stderr": _tail(early_exit.stderr),
+                    "stderr": _stderr_tail(early_exit.stderr),
                     "attempts": attempt,
                     "port_conflict": port_conflict,
                 },

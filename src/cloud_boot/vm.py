@@ -2,7 +2,16 @@
 # vm.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Launch and stop one QEMU/KVM guest on a qcow2 overlay of a verified base image."""
+"""Launch and stop one QEMU/KVM guest on a qcow2 overlay of a verified base image.
+
+- `QemuBackend` covers one guest's process lifecycle:
+    - `~QemuBackend.prepare` creates the run's overlay
+    - `~QemuBackend.start` launches QEMU and returns once it survives a short startup window
+    - `~QemuBackend.stop` waits for QEMU to exit before escalating to signals.
+
+Surviving the window means only that QEMU did not fail at once; whether the guest booted is decided
+later, over SSH. The caller asks the guest to shut down; this module only manages the QEMU process.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -55,16 +64,20 @@ __all__ = [
 # ----------------------------------------------------------------------------------------------------
 DEFAULT_QEMU_BINARY = "qemu-system-x86_64"
 DEFAULT_QEMU_IMG_BINARY = "qemu-img"
-SSH_HOST = "127.0.0.1"
-MAX_LAUNCH_ATTEMPTS = 3
+SSH_HOST = "127.0.0.1"  # Forward SSH on loopback only, so the guest is never reachable remotely.
+MAX_LAUNCH_ATTEMPTS = 3  # Launches in all; only forwarding-port conflicts are retried.
+# QEMU still running after this long counts as started; it says nothing about the guest's boot.
 DEFAULT_STARTUP_WINDOW_SECONDS = 2.0
+# The end of `stop`'s deadline reserved for SIGTERM and SIGKILL.
 DEFAULT_TERMINATION_SECONDS = 10.0
 # The full console goes to the caller's sink; memory keeps only a tail for error reports.
 CONSOLE_CAPTURE_LIMIT_BYTES = 64 * 1024
 _POLL_INTERVAL_SECONDS = 0.05
-_STDERR_CONTEXT_BYTES = 2048
-# QEMU prints this when the SSH forwarding port was taken between allocation and launch.
+_STDERR_CONTEXT_BYTES = 2048  # Tail of stderr kept in error context.
+# QEMU prints this when the SSH forwarding port was taken between allocation and launch (checked
+# against QEMU 8.2, Noble's version).
 _PORT_CONFLICT_MARKER = b"Could not set up host forwarding rule"
+# No "," or "=", so a name cannot add QEMU suboptions.
 _NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 type ConsoleSink = ByteWriter | Callable[[bytes], object]
@@ -104,7 +117,14 @@ class VmLaunchError(CloudBootError):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class DiskArtifact:
-    """A per-run qcow2 overlay backed read-only by the verified base image."""
+    """A per-run qcow2 overlay backed read-only by the verified base image.
+
+    Only `QemuBackend.prepare` creates one, so `VmLaunchSpec.disk` cannot be the base image
+    itself, which a guest would otherwise write to.
+
+    Attributes:
+        path: The overlay, `overlay.qcow2` in the run directory.
+    """
 
     path: Path
 
@@ -140,7 +160,16 @@ class VmLaunchSpec:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class VmHandle:
-    """A running guest and its loopback SSH endpoint."""
+    """A running guest and its loopback SSH endpoint.
+
+    Attributes:
+        process: The QEMU process.
+        argv: The exact QEMU command line, recorded in the run's artifacts.
+        ssh_host: Always `SSH_HOST`; carried so callers need not import it.
+        ssh_port: The host port forwarded to the guest's port 22.
+        launch_attempts: QEMU launches needed, counting retries after port conflicts; the run
+            report does not include it yet.
+    """
 
     process: ManagedProcess
     argv: tuple[str, ...]
@@ -151,7 +180,13 @@ class VmHandle:
 
 # ----------------------------------------------------------------------------------------------------
 class StopReason(StrEnum):
-    """How QEMU ended during `QemuBackend.stop`."""
+    """How QEMU ended during `QemuBackend.stop`.
+
+    Attributes:
+        EXITED: QEMU exited by itself, typically after the guest shut down.
+        TERMINATED: QEMU exited after SIGTERM.
+        KILLED: QEMU needed SIGKILL.
+    """
 
     EXITED = "exited"
     TERMINATED = "terminated"
@@ -161,7 +196,12 @@ class StopReason(StrEnum):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class StopResult:
-    """The outcome of stopping a guest, with QEMU's captured stderr and console tail."""
+    """The outcome of stopping a guest.
+
+    Attributes:
+        reason: How QEMU ended.
+        result: QEMU's exit status, stderr, and the console tail.
+    """
 
     reason: StopReason
     result: CommandResult
@@ -206,9 +246,11 @@ def build_qemu_argv(
         qemu_binary,
         "-name",
         spec.name,
+        # No default devices and no host config files, so a spec yields the same guest anywhere.
         "-nodefaults",
         "-no-user-config",
         "-machine",
+        # KVM only: without it QEMU exits at once rather than falling back to slow emulation.
         "q35,accel=kvm",
         "-cpu",
         "host",
@@ -220,6 +262,8 @@ def build_qemu_argv(
         "none",
         "-serial",
         "stdio",
+        # Explicit formats stop QEMU from probing them. The overlay comes first, so it is the
+        # guest's first disk and the one the firmware boots; cloud-init finds the seed by label.
         "-drive",
         f"file={_option_path(spec.disk.path)},if=virtio,format=qcow2",
         "-drive",
@@ -233,12 +277,20 @@ def build_qemu_argv(
 
 # ----------------------------------------------------------------------------------------------------
 def _option_path(path: Path) -> str:
-    # QEMU separates option values with ","; a literal comma must be written as ",,".
+    """Return `path` as an absolute QEMU option value.
+
+    QEMU resolves a relative path against its own working directory, and it separates
+    suboptions with "," so a literal comma is written as ",,".
+    """
     return str(path.absolute()).replace(",", ",,")
 
 
 # ----------------------------------------------------------------------------------------------------
 def _stderr_tail(data: bytes) -> str:
+    """Decode the last `_STDERR_CONTEXT_BYTES` of stderr for an error's context.
+
+    A multibyte character cut at the boundary decodes as U+FFFD instead of raising.
+    """
     return data[-_STDERR_CONTEXT_BYTES:].decode("utf-8", errors="replace")
 
 
@@ -248,6 +300,19 @@ class QemuBackend:
 
     Pass the same monotonic clock and sleeper to this backend and its `CommandRunner` so startup
     observation and shutdown deadlines are measured on one timeline.
+
+    Args:
+        runner: Runs `qemu-img` and starts QEMU.
+        qemu_binary: The QEMU system emulator to execute.
+        qemu_img_binary: The `qemu-img` executable.
+        port_allocator: Returns a free loopback port for SSH forwarding.
+        clock: Monotonic clock, shared with `runner`.
+        sleeper: Waits between process polls.
+        startup_window_seconds: How long QEMU must keep running for `start` to succeed.
+        termination_seconds: The end of `stop`'s deadline reserved for SIGTERM and SIGKILL.
+
+    Raises:
+        ValueError: If a window is not positive and finite.
     """
 
     def __init__(
@@ -285,21 +350,28 @@ class QemuBackend:
         Args:
             image: The checksum-verified base image.
             run_dir: The run's directory, which must already exist.
-            disk_gib: Virtual size of the guest disk.
+            disk_gib: Virtual size of the guest disk. qemu-img accepts a size below the base
+                image's, so `ResourceSpec` keeps it at least 4 GiB.
             deadline: Monotonic deadline for qemu-img.
 
         Returns:
             The overlay, ready to pass to `start` in a `VmLaunchSpec`.
 
         Raises:
+            ValueError: If `disk_gib` is not a positive integer.
             OverlayError: If the overlay already exists or qemu-img fails.
+            ProcessStartError: If qemu-img cannot be executed.
+            ProcessTimeoutError: If qemu-img does not finish by `deadline`.
         """
         if isinstance(disk_gib, bool) or not isinstance(disk_gib, int) or disk_gib <= 0:
             raise ValueError("disk_gib must be a positive integer")
         overlay = Path(run_dir) / "overlay.qcow2"
+        # qemu-img create overwrites an existing file, so this check is what protects it.
         if overlay.exists() or overlay.is_symlink():
             raise OverlayError("overlay already exists", context={"path": str(overlay)})
         backing = image.path.absolute()
+        # -F names the backing format, so a base image that is not qcow2 fails instead of being
+        # probed.
         argv = (
             self._qemu_img_binary,
             "create",
@@ -325,9 +397,12 @@ class QemuBackend:
     def start(self, spec: VmLaunchSpec) -> VmHandle:
         """Launch QEMU and return once it survives the startup window.
 
-        The console streams to `spec.console`; only a bounded tail stays in memory. A forwarding
-        port conflict is retried with a new port up to `MAX_LAUNCH_ATTEMPTS` times; any other
-        early exit fails immediately.
+        The console streams to `spec.console`; only a bounded tail stays in memory. After a
+        forwarding-port conflict QEMU is relaunched on a fresh port, up to `MAX_LAUNCH_ATTEMPTS`
+        launches in all; any other early exit fails immediately.
+
+        Returns:
+            The running guest. The caller must end it with `stop`.
 
         Raises:
             VmLaunchError: If QEMU exits during the startup window.
@@ -345,6 +420,8 @@ class QemuBackend:
             try:
                 early_exit = self._await_startup(process)
             except BaseException:
+                # QEMU runs in its own session, so a terminal Ctrl-C never reaches it: stop it
+                # here, even on KeyboardInterrupt, without masking the original exception.
                 with contextlib.suppress(Exception):
                     process.stop(timeout=self._termination_seconds)
                 raise
@@ -356,6 +433,7 @@ class QemuBackend:
                     ssh_port=port,
                     launch_attempts=attempt,
                 )
+            # QEMU exits at once when another process took the port after allocation.
             port_conflict = _PORT_CONFLICT_MARKER in early_exit.stderr
             if port_conflict and attempt < MAX_LAUNCH_ATTEMPTS:
                 continue
@@ -375,6 +453,12 @@ class QemuBackend:
             )
 
     def _await_startup(self, process: ManagedProcess) -> CommandResult | None:
+        """Poll QEMU until it exits or the startup window ends.
+
+        Returns:
+            QEMU's result if it exited during the window, with its output fully collected, or
+            `None` if it is still running.
+        """
         end = self._clock() + self._startup_window_seconds
         while True:
             if process.poll() is not None:
@@ -391,12 +475,17 @@ class QemuBackend:
         `termination_seconds` before `deadline` are reserved for process-group signals, so the
         whole stop never outlasts the caller's deadline.
 
+        Returns:
+            How QEMU ended, with its exit status and captured output.
+
         Raises:
+            ValueError: If `deadline` is not finite.
             ProcessTimeoutError: If QEMU survives SIGKILL until `deadline`.
         """
         if not math.isfinite(deadline):
             raise ValueError("deadline must be finite")
         process = handle.process
+        # Phase 1: leave the guest time to shut down on its own.
         signal_from = max(self._clock(), deadline - self._termination_seconds)
         while process.poll() is None:
             remaining = signal_from - self._clock()
@@ -406,5 +495,7 @@ class QemuBackend:
         if process.poll() is not None:
             return StopResult(StopReason.EXITED, process.wait(deadline=deadline))
         result = process.stop(deadline=deadline)
+        # QEMU handles SIGTERM by shutting down and exits 0 (checked against QEMU 8.2), so only
+        # -SIGKILL tells KILLED from TERMINATED; EXITED is known by the branch above, not the code.
         killed = result.returncode == -signal.SIGKILL
         return StopResult(StopReason.KILLED if killed else StopReason.TERMINATED, result)

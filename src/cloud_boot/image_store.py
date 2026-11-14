@@ -247,7 +247,7 @@ class ImageStore:
 
         if deadline is not None:
             end = min(end, deadline)  # A caller's deadline may shorten the budget, never extend it.
-        self._remaining(end, "image resolution")  # Fail fast if that deadline already passed.
+        self._require_time_left(end, "image resolution")  # Fail fast if that deadline already passed.
         image_spec = spec if spec is not None else ImageSpec()
         self._validate_spec(image_spec)
         basename = self._basename(image_spec)
@@ -261,7 +261,7 @@ class ImageStore:
                 f"cannot use the image cache: {e}", context={"cache_dir": str(self.cache_dir)}
             ) from e
 
-    def _remaining(self, deadline: float, operation: str) -> float:
+    def _require_time_left(self, deadline: float, operation: str) -> float:
         """Return seconds left before `deadline`, or raise a timeout naming `operation`."""
         remaining = deadline - self._monotonic()
         if remaining <= 0:
@@ -312,12 +312,12 @@ class ImageStore:
         """Poll for the exclusive cache lock until it is free or the deadline passes."""
         # A blocking flock cannot time out, so poll with LOCK_NB instead.
         while True:
-            self._remaining(deadline, "image cache lock acquisition")
+            self._require_time_left(deadline, "image cache lock acquisition")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return
             except BlockingIOError:
-                remaining = self._remaining(deadline, "image cache lock acquisition")
+                remaining = self._require_time_left(deadline, "image cache lock acquisition")
                 # No download is running yet, so there is no cancellation event to pass.
                 self._sleeper(min(0.1, remaining), None)
 
@@ -330,7 +330,7 @@ class ImageStore:
             (self.cache_dir / "releases", ".metadata-*"),
         ):
             for stale in directory.glob(pattern):
-                self._remaining(deadline, "stale cache cleanup")
+                self._require_time_left(deadline, "stale cache cleanup")
                 # Another resolve cannot be writing it, since we hold the lock, but a user may have
                 # deleted it by hand.
                 with contextlib.suppress(FileNotFoundError):
@@ -342,7 +342,7 @@ class ImageStore:
         Any missing, unreadable, malformed, or mismatched pointer or image is a cache miss rather
         than an error, so the caller downloads a fresh copy, which rewrites both.
         """
-        self._remaining(deadline, "cached image verification")
+        self._require_time_left(deadline, "cached image verification")
         pointer = self.cache_dir / "releases" / f"{spec.release}.json"
         try:
             metadata = json.loads(pointer.read_text(encoding="utf-8"))
@@ -400,10 +400,10 @@ class ImageStore:
         try:
             with path.open("rb") as source:
                 while True:
-                    self._remaining(deadline, "cached image verification")
+                    self._require_time_left(deadline, "cached image verification")
                     chunk = source.read(self._chunk_size)
                     # Check again after reading: one read can block on slow storage.
-                    self._remaining(deadline, "cached image verification")
+                    self._require_time_left(deadline, "cached image verification")
                     if not chunk:
                         break
                     size_bytes += len(chunk)
@@ -441,7 +441,7 @@ class ImageStore:
                     "downloaded image checksum does not match SHA256SUMS",
                     context={"expected_digest": expected_digest, "actual_digest": digest},
                 )
-            self._remaining(deadline, "image cache publication")
+            self._require_time_left(deadline, "image cache publication")
             final_dir = self.cache_dir / "sha256"
             final_dir.mkdir(mode=0o700, exist_ok=True)
             final_path = final_dir / f"{digest}.img"
@@ -519,7 +519,7 @@ class ImageStore:
                     raise ImageStoreError("downloaded image exceeds the configured size limit")
                 hasher.update(chunk)
                 destination.write(chunk)
-                self._remaining(deadline, "image download")
+                self._require_time_left(deadline, "image download")
         return hasher.hexdigest(), size_bytes
 
     def _write_metadata(
@@ -557,7 +557,7 @@ class ImageStore:
                 temporary.write("\n")
                 temporary.flush()
                 os.fsync(temporary.fileno())
-            self._remaining(deadline, "image metadata publication")
+            self._require_time_left(deadline, "image metadata publication")
             os.replace(temporary_path, pointer)
         finally:
             if temporary_path is not None:
@@ -598,7 +598,7 @@ class ImageStore:
                 expected_bytes = _content_length(response)
                 received_bytes = 0
                 while not cancelled.is_set():
-                    self._remaining(deadline, "image download")
+                    self._require_time_left(deadline, "image download")
                     chunk = response.read(self._chunk_size)
                     if not chunk:
                         # urllib reports a body cut short as a normal end, so compare the byte
@@ -630,13 +630,13 @@ class ImageStore:
         threading.Thread(target=produce, name="cloud-boot-download", daemon=True).start()
         try:
             while True:
-                remaining = self._remaining(deadline, "image download")
+                remaining = self._require_time_left(deadline, "image download")
                 try:
                     # A short timeout lets the deadline fire even while the producer is stuck.
                     message = messages.get(timeout=min(remaining, 0.05))
                 except queue.Empty:
                     continue
-                self._remaining(deadline, "image download")
+                self._require_time_left(deadline, "image download")
                 if message is None:
                     return
                 if isinstance(message, Exception):
@@ -662,7 +662,7 @@ class ImageStore:
         last_error: Exception | None = None
 
         for attempt in range(self._retry_attempts):
-            self._remaining(deadline, "image download")
+            self._require_time_left(deadline, "image download")
 
             if cancelled.is_set():
                 raise ImageStoreError("image download cancelled")
@@ -695,7 +695,7 @@ class ImageStore:
                 delay = self._retry_base_seconds * (2**attempt)
             # No sleep after the last attempt; there is nothing left to wait for.
             if attempt + 1 < self._retry_attempts:
-                delay = min(delay, self._remaining(deadline, "download retry backoff"))
+                delay = min(delay, self._require_time_left(deadline, "download retry backoff"))
                 self._sleeper(delay, cancelled)
         raise ImageStoreError(
             "image download failed after bounded retries", context={"url": url}

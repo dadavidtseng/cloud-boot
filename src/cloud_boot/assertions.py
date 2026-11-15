@@ -2,7 +2,15 @@
 # assertions.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Evaluate Milestone 0 guest assertions over the SSH transport."""
+"""Evaluate Milestone 0 guest assertions over the SSH transport.
+
+Each assertion type has one evaluator in an `AssertionRegistry`. An evaluator runs one fixed
+script in the guest through `GuestTransport.execute`, passing scenario values only as
+positional parameters, and turns the output into an `Evaluation`. `run_assertions` wraps each
+one into an `AssertionResult`: `passed`, `failed` when the guest did not match or the check
+timed out, or `blocked` when the check could not run because the SSH transport was lost or the
+run's time was already used up.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -52,6 +60,8 @@ _SUDO_UNAVAILABLE = 4
 _READ_FAILED = 5
 # dpkg-query exits 1 when no package matches; any other failure means it could not answer.
 _NO_SUCH_PACKAGE = 1
+# Checks run as root, so file permissions never hide what is being checked. The guard reports a
+# missing `sudo -n` once, clearly, instead of as each command's own error.
 _SUDO_GUARD = "sudo -n true 2>/dev/null || exit 4\n"
 
 CLOUD_INIT_STATUS_SCRIPT = (
@@ -59,7 +69,9 @@ CLOUD_INIT_STATUS_SCRIPT = (
     + "command -v cloud-init >/dev/null 2>&1 || exit 3\n"
     + "sudo -n cloud-init status --format=json\n"
 )
-# $1 path, $2 "content" to send the file body, $3 the content limit in bytes.
+# $1 path, $2 "content" to send the file body, $3 the content limit in bytes. The first line is
+# "missing", "file <size>", "directory", or "other"; for a file within the limit, its bytes follow.
+# `test` follows symlinks: a link reports its target, and a dangling link reads as missing.
 FILE_SCRIPT = (
     _SUDO_GUARD
     + 'if ! sudo -n test -e "$1"; then printf "missing\\n"; exit 0; fi\n'
@@ -73,6 +85,8 @@ FILE_SCRIPT = (
     + 'else printf "other\\n"\n'
     + "fi\n"
 )
+# `name` cannot hold glob characters (see `PackageInstalledAssertion`), so -W matches only that
+# package. Each installed architecture prints one "status<TAB>version" line.
 PACKAGE_SCRIPT = (
     _SUDO_GUARD
     + "command -v dpkg-query >/dev/null 2>&1 || exit 3\n"
@@ -84,7 +98,10 @@ type AssertionStatus = Literal["passed", "failed", "blocked"]
 
 # ----------------------------------------------------------------------------------------------------
 class GuestTransport(Protocol):
-    """The part of `SshTransport` that evaluators need."""
+    """The part of `SshTransport` that evaluators need.
+
+    The coordinator passes a wrapper that caps each command's timeout at the time left in the run.
+    """
 
     def execute(self, script: str, args: Sequence[str] = (), *, timeout: float = ...) -> GuestResult:
         """Run a fixed script in the guest with positional values."""
@@ -93,7 +110,12 @@ class GuestTransport(Protocol):
 
 # ----------------------------------------------------------------------------------------------------
 class CommandReference(BaseModel):
-    """Which fixed guest script ran, and with which positional values, for reproduction."""
+    """Which fixed guest script ran, and with which positional values, for reproduction.
+
+    Attributes:
+        script: The script's name, such as `file`, not its text.
+        args: The positional values passed as `$1`, `$2`, ...
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -103,10 +125,24 @@ class CommandReference(BaseModel):
 
 # ----------------------------------------------------------------------------------------------------
 class AssertionResult(BaseModel):
-    """The uniform outcome of one assertion.
+    """The uniform outcome of one assertion, as written to the run report.
 
-    `failed` means the assertion ran and the guest did not match; `blocked` means it could not run
-    because the SSH transport was lost.
+    `failed` means the check did not confirm the expectation: the guest did not match, the check
+    timed out, or the guest lacked a tool or `sudo -n` to observe it; `reason` says which.
+    `blocked` means it could not run: the SSH transport was lost, or the run's time was used up
+    before it started.
+
+    Attributes:
+        id: The assertion's ID from the scenario.
+        type: The assertion type, such as `file`.
+        boot: The boot plan it ran in.
+        required: Whether a non-pass fails the boot.
+        status: `passed`, `failed`, or `blocked`.
+        expected: What the scenario asked for.
+        observed: What the guest showed, or `None` when nothing was observed.
+        reason: A one-line explanation of the status.
+        duration_seconds: Time spent on this assertion.
+        command: The script that ran, or `None` when none finished.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -126,7 +162,14 @@ class AssertionResult(BaseModel):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Evaluation:
-    """What one evaluator observed in the guest."""
+    """What one evaluator observed in the guest.
+
+    Attributes:
+        passed: Whether the guest matched the expectation.
+        observed: What the guest showed, for the report.
+        reason: A one-line explanation.
+        command: The script that ran.
+    """
 
     passed: bool
     observed: JsonValue
@@ -265,12 +308,16 @@ def block_all(
 
 # ----------------------------------------------------------------------------------------------------
 def boot_passed(results: Sequence[AssertionResult]) -> bool:
-    """Return whether every required assertion passed; failed or blocked ones fail the boot."""
+    """Return whether every required assertion passed; failed or blocked ones fail the boot.
+
+    A boot with no required assertions passes.
+    """
     return all(result.status == "passed" for result in results if result.required)
 
 
 # ----------------------------------------------------------------------------------------------------
 def _expected(assertion: AssertionSpec) -> JsonValue:
+    """Return the scenario's expectation for `assertion` as report JSON."""
     if isinstance(assertion, CloudInitStatusAssertion):
         return {"extended_status": assertion.expected}
     if isinstance(assertion, FileAssertion):
@@ -281,6 +328,7 @@ def _expected(assertion: AssertionSpec) -> JsonValue:
         }
     if isinstance(assertion, PackageInstalledAssertion):
         return {"name": assertion.name, "status": "installed"}
+    # mypy reports a missing branch here when a new assertion type is added.
     assert_never(assertion)
 
 
@@ -295,6 +343,7 @@ def _result(
     duration: float,
     command: CommandReference | None,
 ) -> AssertionResult:
+    """Build the `AssertionResult` for `assertion`, clamping a clock step back to zero duration."""
     return AssertionResult(
         id=assertion.id,
         type=assertion.type,
@@ -313,6 +362,7 @@ def _result(
 def _blocked(
     assertion: AssertionSpec, boot: str, reason: str, duration: float = 0.0
 ) -> AssertionResult:
+    """Build a `blocked` result: nothing was observed and no command finished."""
     return _result(
         assertion,
         boot,
@@ -326,6 +376,7 @@ def _blocked(
 
 # ----------------------------------------------------------------------------------------------------
 def _unobservable(result: GuestResult, what: str) -> str | None:
+    """Return why the script could not observe `what`, from its reserved exit statuses, or `None`."""
     if result.exit_status == _TOOL_MISSING:
         return f"a guest tool needed to check {what} is missing"
     if result.exit_status == _SUDO_UNAVAILABLE:
@@ -335,11 +386,16 @@ def _unobservable(result: GuestResult, what: str) -> str | None:
 
 # ----------------------------------------------------------------------------------------------------
 def _stderr_text(result: GuestResult) -> str:
+    """Return the end of the guest's stderr, trimmed for a one-line reason."""
     return result.stderr[-_STDERR_REASON_BYTES:].decode("utf-8", errors="replace").strip()
 
 
 # ----------------------------------------------------------------------------------------------------
 def _evaluate_cloud_init_status(assertion: AssertionSpec, transport: GuestTransport) -> Evaluation:
+    """Check cloud-init's extended status, which reports warnings that `status` alone hides.
+
+    The observation keeps error counts only; the collected cloud-init logs hold the details.
+    """
     if not isinstance(assertion, CloudInitStatusAssertion):
         raise TypeError("expected a cloud-init-status assertion")
     command = CommandReference(script="cloud-init-status", args=())
@@ -361,6 +417,8 @@ def _evaluate_cloud_init_status(assertion: AssertionSpec, transport: GuestTransp
             f"{reason}: {detail}" if detail else reason,
             command,
         )
+    # Older cloud-init has no extended_status, and its plain status cannot show warnings, so a
+    # guest that finished with warnings passes there. Noble's cloud-init reports both.
     extended = status.get("extended_status", status.get("status"))
     errors = status.get("errors")
     recoverable = status.get("recoverable_errors")
@@ -387,6 +445,11 @@ def _evaluate_cloud_init_status(assertion: AssertionSpec, transport: GuestTransp
 
 # ----------------------------------------------------------------------------------------------------
 def _evaluate_file(assertion: AssertionSpec, transport: GuestTransport) -> Evaluation:
+    """Check that a guest path is a regular file, optionally containing text, or is absent.
+
+    Content is matched on the host as bytes, so the expected text is never parsed by the guest.
+    A path that exists but is not a regular file fails either way.
+    """
     if not isinstance(assertion, FileAssertion):
         raise TypeError("expected a file assertion")
     wants_content = assertion.content_contains is not None
@@ -438,6 +501,11 @@ def _evaluate_file(assertion: AssertionSpec, transport: GuestTransport) -> Evalu
 
 # ----------------------------------------------------------------------------------------------------
 def _evaluate_package(assertion: AssertionSpec, transport: GuestTransport) -> Evaluation:
+    """Check that dpkg reports the package as installed for at least one architecture.
+
+    A package dpkg does not know is not installed. A known package in another state, such as
+    `config-files` after removal, fails with that state.
+    """
     if not isinstance(assertion, PackageInstalledAssertion):
         raise TypeError("expected a package-installed assertion")
     command = CommandReference(script="package-installed", args=(assertion.name,))

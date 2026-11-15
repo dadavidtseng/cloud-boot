@@ -52,3 +52,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.ssh
 ```
+
+## Assertions
+
+```{eval-rst}
+.. automodule:: cloud_boot.assertions
+```

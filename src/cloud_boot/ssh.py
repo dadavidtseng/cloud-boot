@@ -209,8 +209,8 @@ def create_access_identity(
 # ----------------------------------------------------------------------------------------------------
 def _config_path(path: Path) -> str:
     text = str(path.absolute())
-    if any(character in text for character in '"\r\n'):
-        raise ValueError("SSH file paths must not contain double quotes or line breaks")
+    if any(character in text for character in '"\\\r\n'):
+        raise ValueError("SSH file paths must not contain double quotes, backslashes, or line breaks")
     # ssh splits unquoted file options on whitespace and expands %-tokens inside them.
     return '"' + text.replace("%", "%%") + '"'
 

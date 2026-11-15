@@ -234,6 +234,15 @@ def test_ssh_file_options_quote_spaces_and_escape_percent_tokens(tmp_path: Path)
     assert f'IdentityFile="{tmp_path}/a b%%h/id_ed25519"' in transport.base_argv
 
 
+@pytest.mark.parametrize("directory", ['a"b', "a\nb", "a\\\\b"])
+def test_ssh_file_options_reject_paths_ssh_would_misread(tmp_path: Path, directory: str) -> None:
+    # Inside quotes ssh still unescapes backslashes, so "a\\b" would become "a\b".
+    identity = AccessIdentity(tmp_path / directory / "id_ed25519", PUBLIC_KEY, tmp_path / "kh")
+
+    with pytest.raises(ValueError, match="SSH file paths"):
+        SshTransport(CommandRunner(), identity, host="127.0.0.1", port=40001)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

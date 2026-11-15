@@ -244,8 +244,14 @@ class SshTransport:
             raise ValueError("port must be between 1 and 65535")
         if not _USER_PATTERN.fullmatch(user):
             raise ValueError("SSH user must be a plain lowercase account name")
-        if isinstance(connect_timeout_seconds, bool) or connect_timeout_seconds <= 0:
-            raise ValueError("connect timeout must be a positive number of seconds")
+        # ssh's ConnectTimeout rejects fractions, and every attempt would then fail as if the
+        # guest were down.
+        if (
+            isinstance(connect_timeout_seconds, bool)
+            or not isinstance(connect_timeout_seconds, int)
+            or connect_timeout_seconds <= 0
+        ):
+            raise ValueError("connect timeout must be a positive whole number of seconds")
         self._runner = runner
         self._clock = clock
         self._sleeper = sleeper

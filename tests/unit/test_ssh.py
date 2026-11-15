@@ -264,6 +264,17 @@ def test_transport_rejects_non_loopback_endpoints_and_unsafe_users(
         SshTransport(CommandRunner(), identity, **options)
 
 
+@pytest.mark.parametrize("timeout", [2.5, True, 0])
+def test_transport_rejects_invalid_connect_timeouts(tmp_path: Path, timeout: Any) -> None:
+    # ssh rejects ConnectTimeout=2.5, so every attempt would fail as if the guest were down.
+    identity = AccessIdentity(tmp_path / "id_ed25519", PUBLIC_KEY, tmp_path / "kh")
+
+    with pytest.raises(ValueError, match="connect timeout"):
+        SshTransport(
+            CommandRunner(), identity, host="127.0.0.1", port=40001, connect_timeout_seconds=timeout
+        )
+
+
 def test_execute_sends_the_script_on_stdin_with_quoted_positional_values(tmp_path: Path) -> None:
     fake = FakePopen(returncode=3, stdout=b"out", stderr=b"err")
     transport, factory, _ = make_transport(tmp_path, [fake])

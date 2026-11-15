@@ -375,7 +375,7 @@ def _blocked(
 
 
 # ----------------------------------------------------------------------------------------------------
-def _unobservable(result: GuestResult, what: str) -> str | None:
+def _unobservable_reason(result: GuestResult, what: str) -> str | None:
     """Return why the script could not observe `what`, from its reserved exit statuses, or `None`."""
     if result.exit_status == _TOOL_MISSING:
         return f"a guest tool needed to check {what} is missing"
@@ -400,7 +400,7 @@ def _evaluate_cloud_init_status(assertion: AssertionSpec, transport: GuestTransp
         raise TypeError("expected a cloud-init-status assertion")
     command = CommandReference(script="cloud-init-status", args=())
     result = transport.execute(CLOUD_INIT_STATUS_SCRIPT, (), timeout=assertion.timeout_seconds)
-    problem = _unobservable(result, "cloud-init status")
+    problem = _unobservable_reason(result, "cloud-init status")
     if problem is not None:
         return Evaluation(False, {"exit_status": result.exit_status}, problem, command)
     # cloud-init exits non-zero for error and degraded states but still prints the JSON status.
@@ -456,7 +456,7 @@ def _evaluate_file(assertion: AssertionSpec, transport: GuestTransport) -> Evalu
     args = (assertion.path, "content" if wants_content else "", str(MAX_FILE_CONTENT_BYTES))
     command = CommandReference(script="file", args=args)
     result = transport.execute(FILE_SCRIPT, args, timeout=assertion.timeout_seconds)
-    problem = _unobservable(result, "the file")
+    problem = _unobservable_reason(result, "the file")
     if problem is not None or result.exit_status != 0 or result.stdout_dropped_bytes:
         if problem is not None:
             reason = problem
@@ -510,7 +510,7 @@ def _evaluate_package(assertion: AssertionSpec, transport: GuestTransport) -> Ev
         raise TypeError("expected a package-installed assertion")
     command = CommandReference(script="package-installed", args=(assertion.name,))
     result = transport.execute(PACKAGE_SCRIPT, (assertion.name,), timeout=assertion.timeout_seconds)
-    problem = _unobservable(result, "packages")
+    problem = _unobservable_reason(result, "packages")
     if problem is not None:
         return Evaluation(False, {"exit_status": result.exit_status}, problem, command)
     if result.exit_status not in (0, _NO_SUCH_PACKAGE):

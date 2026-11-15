@@ -259,6 +259,19 @@ def _config_path(path: Path) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------
+def _guest_result(result: CommandResult) -> GuestResult:
+    """Return `result` as the guest script's outcome, with ssh's exit status as the script's."""
+    return GuestResult(
+        exit_status=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        duration_seconds=result.duration_seconds,
+        stdout_dropped_bytes=result.stdout_dropped_bytes,
+        stderr_dropped_bytes=result.stderr_dropped_bytes,
+    )
+
+
+# ----------------------------------------------------------------------------------------------------
 class SshTransport:
     """Run fixed scripts in the guest over loopback SSH with a run-scoped identity.
 
@@ -419,6 +432,44 @@ class SshTransport:
         self._raise_on_transport_failure(result, "guest command")
         return _guest_result(result)
 
+    def _run_script(
+        self,
+        script: bytes,
+        args: Sequence[str],
+        *,
+        timeout: float,
+        sinks: StreamSinks | None = None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_LIMIT_BYTES,
+    ) -> CommandResult:
+        """Run `script` in the guest with `sh -s`, reading it from stdin.
+
+        ssh joins the remote command into one string for the guest's shell, so each argument is
+        quoted to arrive as exactly one positional parameter. The script itself never passes
+        through that shell. Commands in a script must not read stdin, which holds the script.
+
+        Raises:
+            TypeError: If `args` is a single string rather than a sequence of strings.
+        """
+        if isinstance(args, str):
+            raise TypeError("args must be a sequence of strings, not a string")
+        remote = ("sh", "-s", "--", *(shlex.quote(value) for value in args))
+        spec = CommandSpec(
+            (*self._base_argv, *remote),
+            stdin=script,
+            name="ssh",
+            capture_limit_bytes=capture_limit_bytes,
+        )
+        return self._runner.run(spec, timeout=timeout, sinks=sinks)
+
+    @staticmethod
+    def _raise_on_transport_failure(result: CommandResult, operation: str) -> None:
+        """Raise `SshTransportError` when ssh itself failed, which it reports as exit 255."""
+        if result.returncode == SSH_CLIENT_FAILURE:
+            raise SshTransportError(
+                f"SSH transport failed during {operation}",
+                context={"returncode": result.returncode, "stderr": result.stderr_tail()},
+            )
+
     def copy_from(
         self, remote: str, local: str | Path, *, timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS
     ) -> GuestResult:
@@ -507,54 +558,3 @@ class SshTransport:
             f"guest refused the {operation} request",
             context={"exit_status": result.returncode, "stderr": result.stderr_tail()},
         )
-
-    def _run_script(
-        self,
-        script: bytes,
-        args: Sequence[str],
-        *,
-        timeout: float,
-        sinks: StreamSinks | None = None,
-        capture_limit_bytes: int = DEFAULT_CAPTURE_LIMIT_BYTES,
-    ) -> CommandResult:
-        """Run `script` in the guest with `sh -s`, reading it from stdin.
-
-        ssh joins the remote command into one string for the guest's shell, so each argument is
-        quoted to arrive as exactly one positional parameter. The script itself never passes
-        through that shell. Commands in a script must not read stdin, which holds the script.
-
-        Raises:
-            TypeError: If `args` is a single string rather than a sequence of strings.
-        """
-        if isinstance(args, str):
-            raise TypeError("args must be a sequence of strings, not a string")
-        remote = ("sh", "-s", "--", *(shlex.quote(value) for value in args))
-        spec = CommandSpec(
-            (*self._base_argv, *remote),
-            stdin=script,
-            name="ssh",
-            capture_limit_bytes=capture_limit_bytes,
-        )
-        return self._runner.run(spec, timeout=timeout, sinks=sinks)
-
-    @staticmethod
-    def _raise_on_transport_failure(result: CommandResult, operation: str) -> None:
-        """Raise `SshTransportError` when ssh itself failed, which it reports as exit 255."""
-        if result.returncode == SSH_CLIENT_FAILURE:
-            raise SshTransportError(
-                f"SSH transport failed during {operation}",
-                context={"returncode": result.returncode, "stderr": result.stderr_tail()},
-            )
-
-
-# ----------------------------------------------------------------------------------------------------
-def _guest_result(result: CommandResult) -> GuestResult:
-    """Return `result` as the guest script's outcome, with ssh's exit status as the script's."""
-    return GuestResult(
-        exit_status=result.returncode,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        duration_seconds=result.duration_seconds,
-        stdout_dropped_bytes=result.stdout_dropped_bytes,
-        stderr_dropped_bytes=result.stderr_dropped_bytes,
-    )

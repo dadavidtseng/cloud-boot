@@ -352,6 +352,16 @@ def test_wait_ready_treats_a_hung_attempt_as_a_failed_attempt(tmp_path: Path) ->
     assert clock.now < 60.0
 
 
+@pytest.mark.parametrize("deadline", [float("inf"), float("nan")])
+def test_wait_ready_rejects_non_finite_deadline(tmp_path: Path, deadline: float) -> None:
+    transport, factory, _ = make_transport(tmp_path, [])
+
+    with pytest.raises(ValueError, match="finite"):
+        transport.wait_ready(deadline=deadline)
+
+    assert factory.argvs == []
+
+
 def test_copy_from_streams_the_guest_file_to_a_private_host_file(tmp_path: Path) -> None:
     content = b"cloud-init log line\n" * 1000
     fake = FakePopen(stdout=content)

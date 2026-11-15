@@ -7,6 +7,7 @@
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 import re
@@ -31,7 +32,6 @@ from .process import (
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
     "DEFAULT_SSH_USER",
-    "LOOPBACK_HOST",
     "SSH_CLIENT_FAILURE",
     "AccessIdentity",
     "AccessKeyError",
@@ -46,7 +46,6 @@ __all__ = [
 DEFAULT_SSH_BINARY = "ssh"
 DEFAULT_SSH_KEYGEN_BINARY = "ssh-keygen"
 DEFAULT_SSH_USER = "ubuntu"
-LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
 DEFAULT_POWER_REQUEST_TIMEOUT_SECONDS = 30.0
@@ -238,8 +237,14 @@ class SshTransport:
         sleeper: Sleeper = time.sleep,
         connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> None:
-        if host != LOOPBACK_HOST:
-            raise ValueError("the SSH transport only connects to the loopback guest forward")
+        # An IP literal, not a name: resolving "localhost" could pick ::1 while QEMU listens on
+        # 127.0.0.1, and BatchMode with accept-new must never reach another machine.
+        try:
+            is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            raise ValueError("the SSH transport only connects to a loopback address")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         if not _USER_PATTERN.fullmatch(user):

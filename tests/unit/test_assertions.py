@@ -252,6 +252,17 @@ def test_package_not_installed_fails(response: GuestResult, reason: str) -> None
     assert reason in result.reason
 
 
+def test_dpkg_failure_is_not_reported_as_a_missing_package() -> None:
+    # dpkg-query exits 2 when it cannot read its database, so nothing about the package is known.
+    stderr = b"dpkg-query: error: parsing file '/var/lib/dpkg/status' near line 0\n"
+
+    result, _ = evaluate_one(package("openssh-server"), guest(2, b"", stderr))
+
+    assert result.status == "failed"
+    assert result.observed == {"exit_status": 2}
+    assert result.reason.startswith("package check failed: dpkg-query: error: parsing file")
+
+
 def test_any_installed_architecture_satisfies_a_multiarch_package() -> None:
     stdout = b"config-files\t2.39-0ubuntu8\ninstalled\t2.39-0ubuntu8.4\n"
 

@@ -50,6 +50,8 @@ _STDERR_REASON_BYTES = 512
 _TOOL_MISSING = 3
 _SUDO_UNAVAILABLE = 4
 _READ_FAILED = 5
+# dpkg-query exits 1 when no package matches; any other failure means it could not answer.
+_NO_SUCH_PACKAGE = 1
 _SUDO_GUARD = "sudo -n true 2>/dev/null || exit 4\n"
 
 CLOUD_INIT_STATUS_SCRIPT = (
@@ -441,6 +443,10 @@ def _evaluate_package(assertion: AssertionSpec, transport: GuestTransport) -> Ev
     problem = _unobservable(result, "packages")
     if problem is not None:
         return Evaluation(False, {"exit_status": result.exit_status}, problem, command)
+    if result.exit_status not in (0, _NO_SUCH_PACKAGE):
+        # dpkg-query exits 2 when it cannot read its database: nothing was observed.
+        reason = f"package check failed: {_stderr_text(result) or result.exit_status}"
+        return Evaluation(False, {"exit_status": result.exit_status}, reason, command)
     # A multi-arch package can report one line per installed architecture.
     entries = [
         line.split("\t", 1)

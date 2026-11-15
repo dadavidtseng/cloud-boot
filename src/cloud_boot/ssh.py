@@ -2,7 +2,13 @@
 # ssh.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Ephemeral SSH identity and the loopback SSH transport into the guest."""
+"""Run-scoped SSH identity and the loopback SSH transport into the guest.
+
+`create_access_identity` makes a fresh Ed25519 key for one run; its public key goes into the
+seed's `meta-data`, and `AccessIdentity.destroy` deletes the key pair at cleanup. `SshTransport`
+reaches the guest only through QEMU's loopback port forward, never reads the user's SSH
+configuration or keys, and trusts only host keys recorded during this run.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -45,18 +51,23 @@ __all__ = [
 # ----------------------------------------------------------------------------------------------------
 DEFAULT_SSH_BINARY = "ssh"
 DEFAULT_SSH_KEYGEN_BINARY = "ssh-keygen"
-DEFAULT_SSH_USER = "ubuntu"
+DEFAULT_SSH_USER = "ubuntu"  # The Ubuntu cloud image's default user, which gets the run key.
+# Whole seconds: ssh's ConnectTimeout accepts only an integer.
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
 DEFAULT_POWER_REQUEST_TIMEOUT_SECONDS = 30.0
 # ssh exits 255 for its own failures. With LogLevel=ERROR, stderr can be empty for some of them
 # (for example a connection closed before the banner), so 255 alone marks a transport failure.
 SSH_CLIENT_FAILURE = 255
-KEY_COMMENT = "cloud-boot-run"
+KEY_COMMENT = "cloud-boot-run"  # Marks the key in the guest's authorized_keys.
+# wait_ready backoff: 0.5 s, doubling, capped at 5 s between attempts.
 _READY_INITIAL_DELAY_SECONDS = 0.5
 _READY_MAX_DELAY_SECONDS = 5.0
+# ConnectTimeout covers the TCP connect, handshake, and key exchange, but not authentication or
+# running `true`, which a guest still booting can stall; this bounds the rest of each attempt.
 _READY_ATTEMPT_SLACK_SECONDS = 10.0
 _COPY_CAPTURE_LIMIT_BYTES = 64 * 1024
+# A plain account name; it cannot start with "-", so ssh never reads it as an option.
 _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
 
@@ -111,7 +122,13 @@ class GuestCopyError(CloudBootError):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class AccessIdentity:
-    """A run-scoped Ed25519 key pair and the run's own known-hosts file."""
+    """A run-scoped Ed25519 key pair and the run's own known-hosts file.
+
+    Attributes:
+        private_key: The private key file, mode 0600.
+        public_key: The single-line OpenSSH public key, as written to `meta-data`.
+        known_hosts: Host keys accepted during this run only.
+    """
 
     private_key: Path
     public_key: str
@@ -134,7 +151,19 @@ class AccessIdentity:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class GuestResult:
-    """The exact outcome of one script run in the guest."""
+    """The exact outcome of one script run in the guest.
+
+    `exit_status` is the script's status in the guest; the ssh client's own failures are raised
+    as `SshTransportError` instead.
+
+    Attributes:
+        exit_status: The script's exit status.
+        stdout: Captured stdout, or only its tail when `stdout_dropped_bytes` is non-zero.
+        stderr: Captured stderr, likewise bounded.
+        duration_seconds: Wall time of the ssh invocation.
+        stdout_dropped_bytes: Bytes of stdout not kept in memory.
+        stderr_dropped_bytes: Bytes of stderr not kept in memory.
+    """
 
     exit_status: int
     stdout: bytes
@@ -168,11 +197,16 @@ def create_access_identity(
 
     Raises:
         AccessKeyError: If identity files already exist, or the key cannot be created or read.
+        ProcessStartError: If ssh-keygen cannot be executed.
+        ProcessTimeoutError: If ssh-keygen does not finish by `deadline`. Partial key files
+            stay in `run_dir` until the run's transient directory is removed.
     """
     directory = Path(run_dir)
     private_key = directory / "id_ed25519"
     public_key_path = directory / "id_ed25519.pub"
     known_hosts = directory / "known_hosts"
+    # ssh-keygen would stop at an "Overwrite (y/n)?" prompt (stdin is /dev/null), and it never
+    # checks known_hosts, so refuse existing files up front with a clear error.
     for path in (private_key, public_key_path, known_hosts):
         if path.exists() or path.is_symlink():
             raise AccessKeyError("access identity files already exist", context={"path": str(path)})
@@ -192,12 +226,14 @@ def create_access_identity(
             context={"returncode": result.returncode, "stderr": result.stderr_tail()},
         )
     try:
+        # ssh-keygen already writes 0600, but ssh refuses a key others can read; do not rely on it.
         os.chmod(private_key, 0o600)
         public_key = public_key_path.read_text(encoding="ascii").strip()
         known_hosts.touch(mode=0o600, exist_ok=False)
     except (OSError, UnicodeDecodeError) as e:
         discard_keys()
         raise AccessKeyError("cannot finish the run key", context={"path": str(directory)}) from e
+    # The seed's meta-data needs exactly one line, and we asked for an Ed25519 key.
     if "\n" in public_key or not public_key.startswith("ssh-ed25519 "):
         discard_keys()
         known_hosts.unlink(missing_ok=True)
@@ -207,10 +243,18 @@ def create_access_identity(
 
 # ----------------------------------------------------------------------------------------------------
 def _config_path(path: Path) -> str:
+    """Quote `path` as an ssh `-o` value that ssh reads back unchanged.
+
+    The path is made absolute so it does not depend on ssh's working directory. ssh splits
+    unquoted values on whitespace, expands %-tokens, and unescapes backslashes inside quotes, so
+    "%" is doubled and characters that cannot be quoted safely are rejected.
+
+    Raises:
+        ValueError: If the path contains a double quote, backslash, or line break.
+    """
     text = str(path.absolute())
     if any(character in text for character in '"\\\r\n'):
         raise ValueError("SSH file paths must not contain double quotes, backslashes, or line breaks")
-    # ssh splits unquoted file options on whitespace and expands %-tokens inside them.
     return '"' + text.replace("%", "%%") + '"'
 
 
@@ -222,6 +266,20 @@ class SshTransport:
     only in the run's known-hosts file, disables agent, X11, and port forwarding, and bounds the
     connection with a timeout and keepalives. Scripts travel on stdin to `sh -s --`; values are
     positional parameters, each quoted because ssh joins the remote command into one string.
+
+    Args:
+        runner: Runs every ssh invocation.
+        identity: The run's key pair and known-hosts file.
+        host: A loopback IP address; QEMU forwards SSH only on loopback.
+        port: The host port QEMU forwards to the guest's port 22.
+        user: The guest account that holds the run key.
+        ssh_binary: The ssh client to execute.
+        clock: Monotonic clock for `wait_ready`.
+        sleeper: Waits between `wait_ready` attempts.
+        connect_timeout_seconds: ssh's ConnectTimeout, in whole seconds.
+
+    Raises:
+        ValueError: If `host` is not a loopback address, or another argument is out of range.
     """
 
     def __init__(
@@ -263,20 +321,27 @@ class SshTransport:
         self._connect_timeout_seconds = connect_timeout_seconds
         self._base_argv = (
             ssh_binary,
+            # No user or system ssh_config, and never prompt.
             "-F", "/dev/null",
             "-o", "BatchMode=yes",
+            # Only the run key, and only this run's known hosts. The guest is new each run, so its
+            # first host key is accepted; a different key later (another process on the port) is
+            # refused.
             "-o", "IdentitiesOnly=yes",
             "-o", f"IdentityFile={_config_path(identity.private_key)}",
             "-o", f"UserKnownHostsFile={_config_path(identity.known_hosts)}",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "StrictHostKeyChecking=accept-new",
+            # The guest gets nothing from the host: no agent, X11, port forwarding, or LocalCommand.
             "-o", "ForwardAgent=no",
             "-o", "ForwardX11=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "PermitLocalCommand=no",
+            # Give up on a dead connection after about 15 s: 3 keepalives, 5 s apart.
             "-o", f"ConnectTimeout={connect_timeout_seconds}",
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=3",
+            # Hide "Permanently added ... to known hosts", so stderr holds only the script's output.
             "-o", "LogLevel=ERROR",
             "-p", str(port),
             "-l", user,
@@ -291,13 +356,17 @@ class SshTransport:
     def wait_ready(self, *, deadline: float) -> int:
         """Retry `true` over SSH with bounded exponential backoff until it succeeds.
 
-        Early in boot, connections are reset before sshd starts and keys are refused until
-        cloud-init installs the run key, so every failure is retried until `deadline`.
+        Ready means sshd accepts the run key; cloud-init may still be running, and the caller
+        waits for it separately. Early in boot, connections are refused before sshd starts and
+        the key is refused until cloud-init installs it, so every failure is retried until
+        `deadline`. That includes failures that will never clear, such as a changed host key;
+        the error's `last_failure` then shows ssh's own message.
 
         Returns:
-            The number of attempts made.
+            The number of attempts made; the run report does not include it yet.
 
         Raises:
+            ValueError: If `deadline` is not finite.
             SshTransportError: If the guest is not reachable before `deadline`.
         """
         if not math.isfinite(deadline):
@@ -368,6 +437,7 @@ class SshTransport:
             raise ValueError("remote path must be an absolute guest path")
         destination = Path(local)
         try:
+            # O_EXCL also refuses a symlink, even a dangling one, so the copy never lands elsewhere.
             descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except OSError as e:
             raise GuestCopyError(
@@ -407,9 +477,12 @@ class SshTransport:
     def shutdown(self, *, timeout: float = DEFAULT_POWER_REQUEST_TIMEOUT_SECONDS) -> None:
         """Ask the guest to power off; follow with `QemuBackend.stop` to wait for QEMU to exit.
 
+        systemd's `shutdown -h` powers off rather than halting, so QEMU exits with the guest.
+
         Raises:
             SshTransportError: If the guest refuses the request, for example when sudo needs a
                 password.
+            ProcessTimeoutError: If ssh does not return within `timeout`.
         """
         self._request_power_change("sudo -n shutdown -h now", "shutdown", timeout)
 
@@ -418,12 +491,16 @@ class SshTransport:
 
         Raises:
             SshTransportError: If the guest refuses the request.
+            ProcessTimeoutError: If ssh does not return within `timeout`.
         """
         self._request_power_change("sudo -n reboot", "reboot", timeout)
 
     def _request_power_change(self, command: str, operation: str, timeout: float) -> None:
+        """Run a privileged power command with `sudo -n`, so a password prompt fails at once."""
         result = self._run_script(command.encode("ascii"), (), timeout=timeout)
-        # The guest drops the connection while going down, so ssh's own 255 is expected here.
+        # The guest drops the connection while going down, so ssh's own 255 is expected here. It
+        # can also mean the request never reached the guest; `QemuBackend.stop` escalates to
+        # signals either way.
         if result.returncode in (0, SSH_CLIENT_FAILURE):
             return
         raise SshTransportError(
@@ -440,6 +517,15 @@ class SshTransport:
         sinks: StreamSinks | None = None,
         capture_limit_bytes: int = DEFAULT_CAPTURE_LIMIT_BYTES,
     ) -> CommandResult:
+        """Run `script` in the guest with `sh -s`, reading it from stdin.
+
+        ssh joins the remote command into one string for the guest's shell, so each argument is
+        quoted to arrive as exactly one positional parameter. The script itself never passes
+        through that shell. Commands in a script must not read stdin, which holds the script.
+
+        Raises:
+            TypeError: If `args` is a single string rather than a sequence of strings.
+        """
         if isinstance(args, str):
             raise TypeError("args must be a sequence of strings, not a string")
         remote = ("sh", "-s", "--", *(shlex.quote(value) for value in args))
@@ -453,6 +539,7 @@ class SshTransport:
 
     @staticmethod
     def _raise_on_transport_failure(result: CommandResult, operation: str) -> None:
+        """Raise `SshTransportError` when ssh itself failed, which it reports as exit 255."""
         if result.returncode == SSH_CLIENT_FAILURE:
             raise SshTransportError(
                 f"SSH transport failed during {operation}",
@@ -462,6 +549,7 @@ class SshTransport:
 
 # ----------------------------------------------------------------------------------------------------
 def _guest_result(result: CommandResult) -> GuestResult:
+    """Return `result` as the guest script's outcome, with ssh's exit status as the script's."""
     return GuestResult(
         exit_status=result.returncode,
         stdout=result.stdout,

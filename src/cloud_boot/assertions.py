@@ -58,8 +58,6 @@ _STDERR_REASON_BYTES = 512
 _TOOL_MISSING = 3
 _SUDO_UNAVAILABLE = 4
 _READ_FAILED = 5
-# dpkg-query exits 1 when no package matches; any other failure means it could not answer.
-_NO_SUCH_PACKAGE = 1
 # Checks run as root, so file permissions never hide what is being checked. The guard reports a
 # missing `sudo -n` once, clearly, instead of as each command's own error.
 _SUDO_GUARD = "sudo -n true 2>/dev/null || exit 4\n"
@@ -92,6 +90,9 @@ PACKAGE_SCRIPT = (
     + "command -v dpkg-query >/dev/null 2>&1 || exit 3\n"
     + "sudo -n dpkg-query -W -f='${db:Status-Status}\\t${Version}\\n' -- \"$1\"\n"
 )
+# dpkg-query's own status, not part of the scripts' protocol above: it exits 1 when no package
+# matches, and any other failure means it could not answer.
+_DPKG_NO_MATCH = 1
 
 type AssertionStatus = Literal["passed", "failed", "blocked"]
 
@@ -513,7 +514,7 @@ def _evaluate_package(assertion: AssertionSpec, transport: GuestTransport) -> Ev
     problem = _unobservable_reason(result, "packages")
     if problem is not None:
         return Evaluation(False, {"exit_status": result.exit_status}, problem, command)
-    if result.exit_status not in (0, _NO_SUCH_PACKAGE):
+    if result.exit_status not in (0, _DPKG_NO_MATCH):
         # dpkg-query exits 2 when it cannot read its database: nothing was observed.
         reason = f"package check failed: {_stderr_text(result) or result.exit_status}"
         return Evaluation(False, {"exit_status": result.exit_status}, reason, command)

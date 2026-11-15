@@ -11,7 +11,7 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, assert_never
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
@@ -279,7 +279,9 @@ def _expected(assertion: AssertionSpec) -> JsonValue:
             "exists": assertion.exists,
             "content_contains": assertion.content_contains,
         }
-    return {"name": assertion.name, "status": "installed"}
+    if isinstance(assertion, PackageInstalledAssertion):
+        return {"name": assertion.name, "status": "installed"}
+    assert_never(assertion)
 
 
 # ----------------------------------------------------------------------------------------------------

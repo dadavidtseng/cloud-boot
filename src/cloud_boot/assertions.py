@@ -213,14 +213,24 @@ def run_assertions(
             )
             results.append(_blocked(assertion, boot, blocked_reason, clock() - started))
             continue
-        except ProcessTimeoutError:
+        except ProcessTimeoutError as e:
+            if e.result is None:
+                # No command ran: the coordinator refused it because the run deadline passed. Every
+                # later check would be refused too, so block them all rather than report failures.
+                blocked_reason = f"not run: {e.message}"
+                results.append(_blocked(assertion, boot, blocked_reason, clock() - started))
+                continue
+            reason = (
+                f"guest check exceeded its {assertion.timeout_seconds}-second timeout, or the time "
+                "left in the run if that was shorter"
+            )
             results.append(
                 _result(
                     assertion,
                     boot,
                     status="failed",
                     observed=None,
-                    reason=f"guest check exceeded its {assertion.timeout_seconds}-second timeout",
+                    reason=reason,
                     duration=clock() - started,
                     command=None,
                 )

@@ -25,7 +25,7 @@ from cloud_boot.models import (
     FileAssertion,
     PackageInstalledAssertion,
 )
-from cloud_boot.process import ProcessTimeoutError
+from cloud_boot.process import CommandResult, ProcessTimeoutError
 from cloud_boot.ssh import GuestResult, SshTransportError
 
 
@@ -275,7 +275,11 @@ def test_transport_loss_blocks_the_current_and_remaining_assertions_in_order() -
 
 
 def test_timeout_fails_only_that_assertion_and_uses_its_own_limit() -> None:
-    transport = FakeTransport([ProcessTimeoutError(), guest(stdout=b"installed\t1:9.6p1\n")])
+    # A command that ran and was stopped carries its result.
+    stopped = CommandResult(("ssh",), -15, b"", b"", 5.0, timed_out=True)
+    transport = FakeTransport(
+        [ProcessTimeoutError(result=stopped), guest(stdout=b"installed\t1:9.6p1\n")]
+    )
     assertions: list[AssertionSpec] = [file_check(timeout_seconds=5), package()]
 
     results = run_assertions(assertions, transport, boot="boot", clock=FakeClock())
@@ -283,6 +287,20 @@ def test_timeout_fails_only_that_assertion_and_uses_its_own_limit() -> None:
     assert [result.status for result in results] == ["failed", "passed"]
     assert "5-second timeout" in results[0].reason
     assert [call[2] for call in transport.calls] == [5, 30]
+
+
+def test_run_deadline_blocks_the_unrun_assertions() -> None:
+    # No result: the coordinator refused to run the command because the run deadline passed.
+    transport = FakeTransport(
+        [guest(stdout=cloud_init_json("done")), ProcessTimeoutError("the run deadline has passed")]
+    )
+    assertions: list[AssertionSpec] = [cloud_init(), file_check(), package()]
+
+    results = run_assertions(assertions, transport, boot="boot", clock=FakeClock())
+
+    assert [result.status for result in results] == ["passed", "blocked", "blocked"]
+    assert all(result.reason == "not run: the run deadline has passed" for result in results[1:])
+    assert len(transport.calls) == 2
 
 
 def test_results_are_uniform_and_record_durations() -> None:

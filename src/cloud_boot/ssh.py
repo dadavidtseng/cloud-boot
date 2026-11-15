@@ -370,15 +370,22 @@ class SshTransport:
             ) from e
         keep = False
         try:
-            with os.fdopen(descriptor, "wb") as stream:
-                result = self._run_script(
-                    b'exec cat -- "$1"',
-                    (remote,),
-                    timeout=timeout,
-                    sinks=StreamSinks(stdout=stream.write),
-                    # The limit covers both streams; keep enough for the guest's stderr.
-                    capture_limit_bytes=_COPY_CAPTURE_LIMIT_BYTES,
-                )
+            try:
+                # Buffered: a write error can surface only when the file is closed, outside the
+                # sink.
+                with os.fdopen(descriptor, "wb") as stream:
+                    result = self._run_script(
+                        b'exec cat -- "$1"',
+                        (remote,),
+                        timeout=timeout,
+                        sinks=StreamSinks(stdout=stream.write),
+                        # The limit covers both streams; keep enough for the guest's stderr.
+                        capture_limit_bytes=_COPY_CAPTURE_LIMIT_BYTES,
+                    )
+            except OSError as e:
+                raise GuestCopyError(
+                    "cannot write the host copy", context={"path": str(destination)}
+                ) from e
             self._raise_on_transport_failure(result, "guest file copy")
             if result.sink_failures:
                 raise GuestCopyError(

@@ -396,6 +396,26 @@ def test_copy_from_refuses_existing_host_files_and_relative_guest_paths(tmp_path
     assert factory.argvs == []
 
 
+def test_copy_from_reports_a_write_error_at_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A small copy stays in the file buffer, so a full disk fails only when the file is closed.
+    real_fdopen = os.fdopen
+
+    def fdopen_on_full_disk(descriptor: int, *args: Any, **kwargs: Any) -> Any:
+        os.close(descriptor)
+        return real_fdopen(os.open("/dev/full", os.O_WRONLY), *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", fdopen_on_full_disk)
+    transport, _, _ = make_transport(tmp_path, [FakePopen(stdout=b"short log\n")])
+    local = tmp_path / "cloud-init.log"
+
+    with pytest.raises(GuestCopyError, match="cannot write"):
+        transport.copy_from("/var/log/cloud-init.log", local)
+
+    assert not local.exists()
+
+
 @pytest.mark.parametrize("returncode", [0, 255])
 @pytest.mark.parametrize(
     ("operation", "script"),

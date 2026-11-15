@@ -73,7 +73,6 @@ DEFAULT_TERMINATION_SECONDS = 10.0
 # The full console goes to the caller's sink; memory keeps only a tail for error reports.
 CONSOLE_CAPTURE_LIMIT_BYTES = 64 * 1024
 _POLL_INTERVAL_SECONDS = 0.05
-_STDERR_CONTEXT_BYTES = 2048  # Tail of stderr kept in error context.
 # QEMU prints this when the SSH forwarding port was taken between allocation and launch (checked
 # against QEMU 8.2, Noble's version).
 _PORT_CONFLICT_MARKER = b"Could not set up host forwarding rule"
@@ -286,15 +285,6 @@ def _option_path(path: Path) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------
-def _stderr_tail(data: bytes) -> str:
-    """Decode the last `_STDERR_CONTEXT_BYTES` of stderr for an error's context.
-
-    A multibyte character cut at the boundary decodes as U+FFFD instead of raising.
-    """
-    return data[-_STDERR_CONTEXT_BYTES:].decode("utf-8", errors="replace")
-
-
-# ----------------------------------------------------------------------------------------------------
 class QemuBackend:
     """Process-only QEMU backend: overlay creation, launch with port retry, and bounded stop.
 
@@ -390,7 +380,7 @@ class QemuBackend:
             overlay.unlink(missing_ok=True)
             raise OverlayError(
                 "qemu-img could not create the overlay",
-                context={"returncode": result.returncode, "stderr": _stderr_tail(result.stderr)},
+                context={"returncode": result.returncode, "stderr": result.stderr_tail()},
             )
         return DiskArtifact(path=overlay)
 
@@ -446,7 +436,7 @@ class QemuBackend:
                 message,
                 context={
                     "returncode": early_exit.returncode,
-                    "stderr": _stderr_tail(early_exit.stderr),
+                    "stderr": early_exit.stderr_tail(),
                     "attempts": attempt,
                     "port_conflict": port_conflict,
                 },

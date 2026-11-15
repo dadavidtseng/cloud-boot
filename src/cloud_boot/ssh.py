@@ -57,7 +57,6 @@ KEY_COMMENT = "cloud-boot-run"
 _READY_INITIAL_DELAY_SECONDS = 0.5
 _READY_MAX_DELAY_SECONDS = 5.0
 _READY_ATTEMPT_SLACK_SECONDS = 10.0
-_STDERR_CONTEXT_BYTES = 2048
 _COPY_CAPTURE_LIMIT_BYTES = 64 * 1024
 _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
@@ -191,7 +190,7 @@ def create_access_identity(
         discard_keys()
         raise AccessKeyError(
             "ssh-keygen could not create the run key",
-            context={"returncode": result.returncode, "stderr": _tail(result.stderr)},
+            context={"returncode": result.returncode, "stderr": result.stderr_tail()},
         )
     try:
         os.chmod(private_key, 0o600)
@@ -205,11 +204,6 @@ def create_access_identity(
         known_hosts.unlink(missing_ok=True)
         raise AccessKeyError("ssh-keygen wrote an unexpected public key")
     return AccessIdentity(private_key=private_key, public_key=public_key, known_hosts=known_hosts)
-
-
-# ----------------------------------------------------------------------------------------------------
-def _tail(data: bytes) -> str:
-    return data[-_STDERR_CONTEXT_BYTES:].decode("utf-8", errors="replace")
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -320,7 +314,7 @@ class SshTransport:
             else:
                 if result.returncode == 0:
                     return attempt
-                last_failure = _tail(result.stderr) or f"ssh exited with {result.returncode}"
+                last_failure = result.stderr_tail() or f"ssh exited with {result.returncode}"
             pause = min(delay, deadline - self._clock())
             if pause > 0:
                 self._sleeper(pause)
@@ -416,7 +410,7 @@ class SshTransport:
             return
         raise SshTransportError(
             f"guest refused the {operation} request",
-            context={"exit_status": result.returncode, "stderr": _tail(result.stderr)},
+            context={"exit_status": result.returncode, "stderr": result.stderr_tail()},
         )
 
     def _run_script(
@@ -444,7 +438,7 @@ class SshTransport:
         if result.returncode == SSH_CLIENT_FAILURE:
             raise SshTransportError(
                 f"SSH transport failed during {operation}",
-                context={"returncode": result.returncode, "stderr": _tail(result.stderr)},
+                context={"returncode": result.returncode, "stderr": result.stderr_tail()},
             )
 
 

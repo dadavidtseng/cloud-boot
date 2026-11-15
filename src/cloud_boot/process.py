@@ -388,6 +388,13 @@ class CommandResult:
         """Whether the child exited 0 on its own, without being stopped at its deadline."""
         return self.returncode == 0 and not self.timed_out
 
+    def stderr_tail(self, limit: int = 2048) -> str:
+        """Decode the last `limit` bytes of stderr for an error's context.
+
+        A multibyte character cut at the boundary decodes as U+FFFD instead of raising.
+        """
+        return self.stderr[-limit:].decode("utf-8", errors="replace")
+
 
 # ----------------------------------------------------------------------------------------------------
 def _resolve_deadline(

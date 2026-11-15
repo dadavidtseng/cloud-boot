@@ -16,6 +16,7 @@ import pytest
 from cloud_boot.errors import ExitCode
 from cloud_boot.process import (
     DEFAULT_CAPTURE_LIMIT_BYTES,
+    CommandResult,
     CommandRunner,
     CommandSpec,
     ManagedProcess,
@@ -166,6 +167,16 @@ def test_nonzero_status_is_a_result_not_an_error() -> None:
 
     assert not result.succeeded
     assert result.returncode == 7
+
+
+def test_stderr_tail_keeps_the_newest_bytes_and_survives_a_split_character() -> None:
+    # "é" is two bytes in UTF-8; a 3-byte limit keeps only its second byte plus "ab".
+    result = CommandResult(
+        argv=("x",), returncode=1, stdout=b"", stderr="xé".encode() + b"ab", duration_seconds=0.0
+    )
+
+    assert result.stderr_tail() == "xéab"
+    assert result.stderr_tail(limit=3) == "�ab"
 
 
 def test_deadline_timeout_terminates_child() -> None:

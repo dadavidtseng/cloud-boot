@@ -200,6 +200,19 @@ def test_file_check_never_mistakes_an_unobservable_guest_for_a_missing_file(
         assert result.observed == {"exit_status": response.exit_status}
 
 
+def test_file_read_failure_reports_the_guest_error_not_a_missing_tool() -> None:
+    # The script exits 5 when stat or cat fails, for example if the file vanished or I/O failed.
+    response = guest(5, stderr=b"cat: /var/tmp/boot-marker: Input/output error\n")
+
+    result, _ = evaluate_one(file_check(content_contains="boot-ok"), response)
+
+    assert result.status == "failed"
+    assert result.reason == "file check failed: cat: /var/tmp/boot-marker: Input/output error"
+    assert result.observed == {"exit_status": 5}
+    # The file script needs no optional tool, so it must never claim one is missing.
+    assert "exit 3" not in FILE_SCRIPT
+
+
 def test_truncated_file_output_fails_instead_of_matching_partial_content() -> None:
     truncated = GuestResult(
         exit_status=0, stdout=b"boot-ok", stderr=b"", duration_seconds=0.1, stdout_dropped_bytes=10
@@ -208,6 +221,7 @@ def test_truncated_file_output_fails_instead_of_matching_partial_content() -> No
     result, _ = evaluate_one(file_check(content_contains="boot-ok"), truncated)
 
     assert result.status == "failed"
+    assert result.reason == "/var/tmp/boot-marker grew past the output limit while it was read"
 
 
 def test_installed_package_passes_with_version() -> None:

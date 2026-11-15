@@ -45,10 +45,11 @@ __all__ = [
 MAX_FILE_CONTENT_BYTES = 512 * 1024
 _STDERR_REASON_BYTES = 512
 
-# Scripts exit 3 when a required guest tool is missing and 4 when `sudo -n` is unavailable.
-# They never exit 255, which the SSH transport reserves for its own failures.
+# Scripts exit 3 when a required guest tool is missing, 4 when `sudo -n` is unavailable, and 5
+# when the file could not be read. They never exit 255, which the SSH transport reserves.
 _TOOL_MISSING = 3
 _SUDO_UNAVAILABLE = 4
+_READ_FAILED = 5
 _SUDO_GUARD = "sudo -n true 2>/dev/null || exit 4\n"
 
 CLOUD_INIT_STATUS_SCRIPT = (
@@ -61,9 +62,11 @@ FILE_SCRIPT = (
     _SUDO_GUARD
     + 'if ! sudo -n test -e "$1"; then printf "missing\\n"; exit 0; fi\n'
     + 'if sudo -n test -f "$1"; then\n'
-    + '  size=$(sudo -n stat -c %s -- "$1") || exit 3\n'
+    + f'  size=$(sudo -n stat -c %s -- "$1") || exit {_READ_FAILED}\n'
     + '  printf "file %s\\n" "$size"\n'
-    + '  if [ "$2" = content ] && [ "$size" -le "$3" ]; then sudo -n cat -- "$1" || exit 3; fi\n'
+    + '  if [ "$2" = content ] && [ "$size" -le "$3" ]; then\n'
+    + f'    sudo -n cat -- "$1" || exit {_READ_FAILED}\n'
+    + "  fi\n"
     + 'elif sudo -n test -d "$1"; then printf "directory\\n"\n'
     + 'else printf "other\\n"\n'
     + "fi\n"
@@ -388,7 +391,13 @@ def _evaluate_file(assertion: AssertionSpec, transport: GuestTransport) -> Evalu
     result = transport.execute(FILE_SCRIPT, args, timeout=assertion.timeout_seconds)
     problem = _unobservable(result, "the file")
     if problem is not None or result.exit_status != 0 or result.stdout_dropped_bytes:
-        reason = problem or f"file check failed: {_stderr_text(result) or result.exit_status}"
+        if problem is not None:
+            reason = problem
+        elif result.exit_status != 0:
+            reason = f"file check failed: {_stderr_text(result) or result.exit_status}"
+        else:
+            # The file grew past the capture limit after `stat` sized it.
+            reason = f"{assertion.path} grew past the output limit while it was read"
         return Evaluation(False, {"exit_status": result.exit_status}, reason, command)
     header, _, body = result.stdout.partition(b"\n")
     fields = header.decode("ascii", errors="replace").split()

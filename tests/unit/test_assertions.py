@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import typing
 from collections.abc import Sequence
 from typing import Any
 
@@ -373,3 +374,16 @@ def test_registry_rejects_duplicate_and_unknown_types() -> None:
 
     with pytest.raises(LookupError, match="no evaluator"):
         AssertionRegistry().evaluate(file_check(), FakeTransport([]))
+
+
+def test_default_registry_handles_every_assertion_type() -> None:
+    # A scenario type without an evaluator would validate, then fail mid-run with LookupError.
+    union, _ = typing.get_args(AssertionSpec.__value__)
+    type_names = {
+        name
+        for model in typing.get_args(union)
+        for name in typing.get_args(model.model_fields["type"].annotation)
+    }
+
+    assert type_names == {"cloud-init-status", "file", "package-installed"}
+    assert set(default_registry()._evaluators) == type_names

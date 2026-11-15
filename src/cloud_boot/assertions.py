@@ -41,8 +41,8 @@ __all__ = [
     "CommandReference",
     "Evaluation",
     "GuestTransport",
+    "all_required_passed",
     "block_all",
-    "boot_passed",
     "default_registry",
     "run_assertions",
 ]
@@ -307,7 +307,7 @@ def block_all(
 
 
 # ----------------------------------------------------------------------------------------------------
-def boot_passed(results: Sequence[AssertionResult]) -> bool:
+def all_required_passed(results: Sequence[AssertionResult]) -> bool:
     """Return whether every required assertion passed; failed or blocked ones fail the boot.
 
     A boot with no required assertions passes.

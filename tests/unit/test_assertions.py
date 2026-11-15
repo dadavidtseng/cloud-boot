@@ -15,8 +15,8 @@ from cloud_boot.assertions import (
     MAX_FILE_CONTENT_BYTES,
     PACKAGE_SCRIPT,
     AssertionRegistry,
+    all_required_passed,
     block_all,
-    boot_passed,
     default_registry,
     run_assertions,
 )
@@ -297,7 +297,7 @@ def test_transport_loss_blocks_the_current_and_remaining_assertions_in_order() -
     assert all(result.observed is None for result in results[1:])
     # Nothing is attempted after the transport is lost.
     assert len(transport.calls) == 2
-    assert not boot_passed(results)
+    assert not all_required_passed(results)
 
 
 def test_timeout_fails_only_that_assertion_and_uses_its_own_limit() -> None:
@@ -361,10 +361,10 @@ def test_boot_outcome_ignores_optional_failures_but_not_required_ones() -> None:
     )
     blocked = block_all([cloud_init(), package()], boot="boot", reason="SSH never became ready")
 
-    assert boot_passed(optional_failure)
+    assert all_required_passed(optional_failure)
     assert [result.status for result in blocked] == ["blocked", "blocked"]
-    assert not boot_passed(blocked)
-    assert boot_passed([])
+    assert not all_required_passed(blocked)
+    assert all_required_passed([])
 
 
 def test_registry_rejects_duplicate_and_unknown_types() -> None:

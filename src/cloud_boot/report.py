@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, field_validator, model_validator
 
 from .artifacts import RunWorkspace
-from .assertions import AssertionResult, boot_passed
+from .assertions import AssertionResult, all_required_passed
 from .errors import CloudBootError, ExitCode
 from .image_store import VerifiedImage
 from .scenario import MAX_SCENARIO_BYTES, LoadedScenario
@@ -157,9 +157,9 @@ class RunReportV1(_ReportModel):
         elif self.outcome == "error":
             raise ValueError("outcome 'error' requires a failure record")
         elif self.outcome == "passed":
-            if self.exit_code != ExitCode.SUCCESS or not boot_passed(all_assertions):
+            if self.exit_code != ExitCode.SUCCESS or not all_required_passed(all_assertions):
                 raise ValueError("outcome 'passed' requires exit code 0 and passing assertions")
-        elif self.exit_code != ExitCode.ASSERTION or boot_passed(all_assertions):
+        elif self.exit_code != ExitCode.ASSERTION or all_required_passed(all_assertions):
             raise ValueError(
                 "outcome 'failed' requires exit code 7 and a failed or blocked assertion"
             )
@@ -176,7 +176,7 @@ def decide_outcome(
     """
     if failure is not None:
         return "error", failure.exit_code
-    if boot_passed(assertions):
+    if all_required_passed(assertions):
         return "passed", int(ExitCode.SUCCESS)
     return "failed", int(ExitCode.ASSERTION)
 

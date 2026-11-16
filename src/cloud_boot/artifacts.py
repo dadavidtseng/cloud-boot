@@ -33,8 +33,8 @@ __all__ = [
 RUNS_DIRNAME = "runs"
 # Seed media, overlays, keys, and known hosts live here and are removed after collection.
 TRANSIENT_DIRNAME = "transient"
-DIRECTORY_MODE = 0o700
-FILE_MODE = 0o600
+_DIRECTORY_MODE = 0o700
+_FILE_MODE = 0o600
 _RUN_ID_ATTEMPTS = 3
 
 type WallClock = Callable[[], datetime]
@@ -97,7 +97,7 @@ class RunWorkspace:
         """
         runs = Path(artifact_root) / RUNS_DIRNAME
         try:
-            runs.mkdir(mode=DIRECTORY_MODE, parents=True, exist_ok=True)
+            runs.mkdir(mode=_DIRECTORY_MODE, parents=True, exist_ok=True)
         except OSError as e:
             raise ArtifactError(
                 "cannot create the runs directory", context={"path": str(runs)}
@@ -109,7 +109,7 @@ class RunWorkspace:
         for _ in range(_RUN_ID_ATTEMPTS):
             path = runs / new_run_id(wall_clock(), token_factory())
             try:
-                os.mkdir(path, DIRECTORY_MODE)
+                os.mkdir(path, _DIRECTORY_MODE)
             except FileExistsError:
                 continue
             except OSError as e:
@@ -117,7 +117,7 @@ class RunWorkspace:
                     "cannot create the run directory", context={"path": str(path)}
                 ) from e
             # mkdir applies the umask; set the mode explicitly.
-            os.chmod(path, DIRECTORY_MODE)
+            os.chmod(path, _DIRECTORY_MODE)
             workspace = cls(path)
             workspace.make_dirs(TRANSIENT_DIRNAME)
             return workspace
@@ -176,8 +176,8 @@ class RunWorkspace:
         for part in PurePosixPath(relative).parts:
             current = current / part
             try:
-                os.mkdir(current, DIRECTORY_MODE)
-                os.chmod(current, DIRECTORY_MODE)
+                os.mkdir(current, _DIRECTORY_MODE)
+                os.chmod(current, _DIRECTORY_MODE)
             except FileExistsError:
                 pass
             except OSError as e:
@@ -198,7 +198,7 @@ class RunWorkspace:
         path = self._prepared_path(relative)
         try:
             descriptor = os.open(
-                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, FILE_MODE
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, _FILE_MODE
             )
         except OSError as e:
             raise ArtifactError("cannot create an artifact file", context={"path": relative}) from e

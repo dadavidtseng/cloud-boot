@@ -142,7 +142,8 @@ class AccessIdentity:
     def destroy(self) -> None:
         """Delete both key files; safe to call more than once.
 
-        The known-hosts file holds only the guest's public host key and is kept as evidence.
+        The known-hosts file holds only the guest's public host key, so it is left in place; it
+        is removed with the rest of the run's transient directory.
         """
         for path in (self.private_key, self.public_key_path):
             path.unlink(missing_ok=True)

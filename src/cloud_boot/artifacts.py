@@ -148,8 +148,11 @@ class RunWorkspace:
         if not relative or "\x00" in relative:
             raise ValueError("artifact paths must be non-empty and free of NUL bytes")
         parts = PurePosixPath(relative).parts
-        if PurePosixPath(relative).is_absolute() or any(part in {"..", "."} for part in parts):
-            raise ValueError(f"artifact path must be relative to the run directory: {relative!r}")
+        # PurePosixPath drops "." and empty components, so "." alone has no parts at all.
+        if not parts or PurePosixPath(relative).is_absolute() or ".." in parts:
+            raise ValueError(
+                f"artifact path must name something inside the run directory: {relative!r}"
+            )
         current = self._path
         for part in parts:
             current = current / part

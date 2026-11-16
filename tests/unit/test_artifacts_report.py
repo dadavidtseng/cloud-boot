@@ -142,7 +142,7 @@ def test_create_reports_a_failed_chmod_as_an_artifact_error(
 
 
 @pytest.mark.parametrize(
-    "relative", ["", "/etc/passwd", "../outside", "boots/../../outside", "a\x00b"]
+    "relative", ["", ".", "./", "/etc/passwd", "../outside", "boots/../../outside", "a\x00b"]
 )
 def test_artifact_paths_cannot_escape_the_run_directory(tmp_path: Path, relative: str) -> None:
     run = workspace(tmp_path)

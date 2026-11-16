@@ -107,17 +107,18 @@ class RunWorkspace:
                 "the runs directory must be a real directory", context={"path": str(runs)}
             )
         for _ in range(_RUN_ID_ATTEMPTS):
+            # os.mkdir claims the name atomically; a clash means the token repeated, so draw again.
             path = runs / new_run_id(wall_clock(), token_factory())
             try:
                 os.mkdir(path, _DIRECTORY_MODE)
+                # mkdir applies the umask; set the mode explicitly.
+                os.chmod(path, _DIRECTORY_MODE)
             except FileExistsError:
                 continue
             except OSError as e:
                 raise ArtifactError(
                     "cannot create the run directory", context={"path": str(path)}
                 ) from e
-            # mkdir applies the umask; set the mode explicitly.
-            os.chmod(path, _DIRECTORY_MODE)
             workspace = cls(path)
             workspace.make_dirs(TRANSIENT_DIRNAME)
             return workspace

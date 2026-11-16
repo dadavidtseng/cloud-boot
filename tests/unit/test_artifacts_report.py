@@ -129,6 +129,18 @@ def test_create_refuses_a_symlinked_runs_directory(tmp_path: Path) -> None:
     assert list(elsewhere.iterdir()) == []
 
 
+def test_create_reports_a_failed_chmod_as_an_artifact_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse_chmod(path: object, mode: int) -> None:
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(os, "chmod", refuse_chmod)
+
+    with pytest.raises(ArtifactError, match="cannot create the run directory"):
+        workspace(tmp_path)
+
+
 @pytest.mark.parametrize(
     "relative", ["", "/etc/passwd", "../outside", "boots/../../outside", "a\x00b"]
 )

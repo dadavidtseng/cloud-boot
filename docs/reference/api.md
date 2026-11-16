@@ -64,3 +64,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.artifacts
 ```
+
+## Run report
+
+```{eval-rst}
+.. automodule:: cloud_boot.report
+```

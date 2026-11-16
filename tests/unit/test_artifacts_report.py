@@ -318,6 +318,7 @@ def test_decide_outcome_is_the_single_source_of_the_exit_code(
         {"started_at": datetime(2026, 11, 7, 19, 5, 12)},  # naive: no timezone
         {"artifacts": ["/var/tmp/console.log"]},
         {"artifacts": ["../console.log"]},
+        {"artifacts": ["."]},
         {"duration_seconds": -1.0},
     ],
 )

@@ -142,7 +142,7 @@ class RunReportV1(_ReportModel):
         """Keep artifact references portable: run-relative, never absolute or traversing."""
         for path in paths:
             pure = PurePosixPath(path)
-            if not path or pure.is_absolute() or ".." in pure.parts:
+            if not pure.parts or pure.is_absolute() or ".." in pure.parts:
                 raise ValueError(f"artifact paths must be run-relative: {path!r}")
         return paths
 

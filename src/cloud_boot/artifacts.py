@@ -84,6 +84,21 @@ def boot_directory(index: int, name: str) -> str:
 
 
 # ----------------------------------------------------------------------------------------------------
+def _sync_directory(directory: Path) -> None:
+    """Persist a rename in `directory`, best effort.
+
+    The file's data is already durable. Some file systems refuse to sync a directory; then a
+    crash may only lose the rename, leaving the previous version in place.
+    """
+    with contextlib.suppress(OSError):
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+# ----------------------------------------------------------------------------------------------------
 class RunWorkspace:
     """One run's directory under `<artifact root>/runs/`, with mode 0700 throughout.
 
@@ -226,6 +241,14 @@ class RunWorkspace:
                 raise ValueError(f"artifact directory is not a real directory: {relative!r}")
         return current
 
+    def _prepared_path(self, relative: str) -> Path:
+        """Check `relative` and create its parent directories, ready for a new file."""
+        path = self.artifact_path(relative)
+        parent = PurePosixPath(relative).parent
+        if str(parent) != ".":
+            self.make_dirs(str(parent))
+        return path
+
     def open_new(self, relative: str) -> BufferedWriter:
         """Create a new 0600 file for streaming, such as the serial console log.
 
@@ -314,26 +337,3 @@ class RunWorkspace:
         # rmtree removes links inside without following them (avoids_symlink_attacks on Linux).
         shutil.rmtree(transient, onexc=record)
         return warnings
-
-    def _prepared_path(self, relative: str) -> Path:
-        """Check `relative` and create its parent directories, ready for a new file."""
-        path = self.artifact_path(relative)
-        parent = PurePosixPath(relative).parent
-        if str(parent) != ".":
-            self.make_dirs(str(parent))
-        return path
-
-
-# ----------------------------------------------------------------------------------------------------
-def _sync_directory(directory: Path) -> None:
-    """Persist a rename in `directory`, best effort.
-
-    The file's data is already durable. Some file systems refuse to sync a directory; then a
-    crash may only lose the rename, leaving the previous version in place.
-    """
-    with contextlib.suppress(OSError):
-        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)

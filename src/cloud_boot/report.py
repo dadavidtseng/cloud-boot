@@ -2,7 +2,12 @@
 # report.py
 # ----------------------------------------------------------------------------------------------------
 
-"""The minimal versioned run report and the single source of a run's exit code."""
+"""The minimal versioned run report and the single source of a run's exit code.
+
+`decide_outcome` turns a run's failure and assertion results into its outcome and exit code;
+the CLI and the report both use it, so they cannot disagree. `RunReportV1` refuses to be built
+when its fields contradict each other, and `write_report` saves it atomically as `report.json`.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -52,7 +57,13 @@ class _ReportModel(BaseModel):
 
 # ----------------------------------------------------------------------------------------------------
 class ScenarioIdentity(_ReportModel):
-    """Which scenario ran, identified by the bytes that were validated."""
+    """Which scenario ran, identified by the bytes that were validated.
+
+    Attributes:
+        name: The scenario's `name` field.
+        source_path: The absolute path of the scenario file.
+        source_sha256: SHA-256 of the file as it was loaded, even if it changed during the run.
+    """
 
     name: str
     source_path: str
@@ -61,7 +72,16 @@ class ScenarioIdentity(_ReportModel):
 
 # ----------------------------------------------------------------------------------------------------
 class ImageIdentity(_ReportModel):
-    """The base image the guest booted from, with its honest verification level."""
+    """The base image the guest booted from, with its honest verification level.
+
+    Attributes:
+        digest: SHA-256 of the image file.
+        size_bytes: The image file's size.
+        source_url: Where the image was downloaded from.
+        checksum_verified: Whether the image matched the release's SHA256SUMS.
+        signature_authenticated: Whether SHA256SUMS itself was signature-checked; false until
+            signature verification exists.
+    """
 
     digest: str
     size_bytes: int
@@ -72,7 +92,18 @@ class ImageIdentity(_ReportModel):
 
 # ----------------------------------------------------------------------------------------------------
 class BootResult(_ReportModel):
-    """What happened during one boot plan."""
+    """What happened during one boot plan.
+
+    Attributes:
+        name: The boot plan's name.
+        index: Its 1-based position in the run.
+        instance_id: The NoCloud instance ID the plan boots with.
+        seed_digests: SHA-256 of each NoCloud file on its seed media, by file name; empty if the
+            seed was never built.
+        stop_reason: How QEMU ended (`exited`, `terminated`, or `killed`), or `None` if QEMU
+            never started or did not stop cleanly.
+        assertions: One result per assertion, in declaration order.
+    """
 
     name: str
     index: int
@@ -84,7 +115,16 @@ class BootResult(_ReportModel):
 
 # ----------------------------------------------------------------------------------------------------
 class FailureRecord(_ReportModel):
-    """The `CloudBootError` that ended the run, in its stable serialized shape."""
+    """The `CloudBootError` that ended the run, in its stable serialized shape.
+
+    Attributes:
+        code: The error's stable machine-readable code, such as `seed-build-failed`.
+        phase: Where in the run it happened (an `ErrorPhase` value).
+        message: What went wrong.
+        remediation: What the user can do about it, if known.
+        exit_code: The exit code the run ends with.
+        context: Details for diagnosis, reduced to JSON values.
+    """
 
     code: str
     phase: str
@@ -112,6 +152,22 @@ class RunReportV1(_ReportModel):
 
     Construction fails if the outcome, exit code, failure, and assertion results disagree, so an
     inconsistent report can never be written.
+
+    Attributes:
+        report_version: The report format version, always 1.
+        run_id: The run ID, which is also the run directory's name.
+        scenario: Which scenario ran.
+        image: The base image, or `None` if the run failed before resolving one.
+        started_at: Wall-clock start time.
+        finished_at: Wall-clock end time. The two are not checked against each other: the wall
+            clock may be adjusted during a run, which must not make the report unwritable.
+        duration_seconds: Elapsed time, measured on a monotonic clock.
+        outcome: `passed`, `failed`, or `error`.
+        exit_code: The exit code the run ends with.
+        boots: One result per boot plan, in order.
+        artifacts: Run-relative paths of every file the run left, sorted, except the report.
+        warnings: Problems that did not change the outcome, such as cleanup failures.
+        failure: The error that ended the run, or `None`.
     """
 
     report_version: Literal[1] = 1
@@ -148,7 +204,12 @@ class RunReportV1(_ReportModel):
 
     @model_validator(mode="after")
     def require_consistent_outcome(self) -> RunReportV1:
-        """Tie outcome, exit code, failure, and assertion results together."""
+        """Tie outcome, exit code, failure, and assertion results together.
+
+        With a failure, the outcome is `error` and the exit code is the failure's. Without one,
+        the outcome is `passed` with exit code 0 when every required assertion passed, and
+        `failed` with exit code 7 otherwise.
+        """
         all_assertions = [result for boot in self.boots for result in boot.assertions]
         if self.failure is not None:
             if self.outcome != "error" or self.exit_code != self.failure.exit_code:
@@ -214,12 +275,13 @@ def image_identity(image: VerifiedImage) -> ImageIdentity:
 
 # ----------------------------------------------------------------------------------------------------
 def seed_digests(seed: SeedArtifact) -> dict[str, str]:
-    """Map each NoCloud file on the seed media to its SHA-256."""
+    """Map each NoCloud file on the seed media to its SHA-256, keyed by file name."""
     return {entry.name: entry.sha256 for entry in seed.files}
 
 
 # ----------------------------------------------------------------------------------------------------
 def _json_value(value: object) -> JsonValue:
+    """Return `value` as JSON: lists and tuples recurse, dict keys become text, the rest `str()`."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):

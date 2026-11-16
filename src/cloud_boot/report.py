@@ -114,6 +114,18 @@ class BootResult(_ReportModel):
 
 
 # ----------------------------------------------------------------------------------------------------
+def _json_value(value: object) -> JsonValue:
+    """Return `value` as JSON: lists and tuples recurse, dict keys become text, the rest `str()`."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return str(value)
+
+
+# ----------------------------------------------------------------------------------------------------
 class FailureRecord(_ReportModel):
     """The `CloudBootError` that ended the run, in its stable serialized shape.
 
@@ -277,15 +289,3 @@ def image_identity(image: VerifiedImage) -> ImageIdentity:
 def seed_digests(seed: SeedArtifact) -> dict[str, str]:
     """Map each NoCloud file on the seed media to its SHA-256, keyed by file name."""
     return {entry.name: entry.sha256 for entry in seed.files}
-
-
-# ----------------------------------------------------------------------------------------------------
-def _json_value(value: object) -> JsonValue:
-    """Return `value` as JSON: lists and tuples recurse, dict keys become text, the rest `str()`."""
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    return str(value)

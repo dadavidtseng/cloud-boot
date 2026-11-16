@@ -7,7 +7,6 @@
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -19,7 +18,7 @@ from .artifacts import RunWorkspace
 from .assertions import AssertionResult, all_required_passed
 from .errors import CloudBootError, ExitCode
 from .image_store import VerifiedImage
-from .scenario import MAX_SCENARIO_BYTES, LoadedScenario
+from .scenario import LoadedScenario
 from .seed import SeedArtifact
 
 # ----------------------------------------------------------------------------------------------------
@@ -53,11 +52,11 @@ class _ReportModel(BaseModel):
 
 # ----------------------------------------------------------------------------------------------------
 class ScenarioIdentity(_ReportModel):
-    """Which scenario ran, and the digest of the file as read when the report was built."""
+    """Which scenario ran, identified by the bytes that were validated."""
 
     name: str
     source_path: str
-    source_sha256: str | None
+    source_sha256: str
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -193,15 +192,11 @@ def write_report(workspace: RunWorkspace, report: RunReportV1) -> Path:
 
 # ----------------------------------------------------------------------------------------------------
 def scenario_identity(loaded: LoadedScenario) -> ScenarioIdentity:
-    """Identify the scenario by name, path, and the SHA-256 of its file (None if unreadable)."""
-    try:
-        with loaded.source_path.open("rb") as stream:
-            data = stream.read(MAX_SCENARIO_BYTES + 1)
-        digest: str | None = hashlib.sha256(data).hexdigest()
-    except OSError:
-        digest = None
+    """Identify the scenario by name, path, and the SHA-256 of the bytes that were validated."""
     return ScenarioIdentity(
-        name=loaded.scenario.name, source_path=str(loaded.source_path), source_sha256=digest
+        name=loaded.scenario.name,
+        source_path=str(loaded.source_path),
+        source_sha256=loaded.source_sha256,
     )
 
 

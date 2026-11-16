@@ -17,6 +17,7 @@ exists, so there is no report to write, and the CLI prints it and exits with
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,12 +110,14 @@ class ScenarioValidationError(ValueError):
 class LoadedScenario:
     """A validated scenario, where it came from, and the boot plans to run.
 
-    `source_path` is absolute; the report hashes the file it points to, and payload files are
-    resolved relative to its directory. `boots` holds one plan per boot, in order, and always
-    exactly one in Milestone 0.
+    `source_path` is absolute, and payload files are resolved relative to its directory.
+    `source_sha256` is the digest of the bytes that were validated, so the report names what ran
+    even if the file changes later. `boots` holds one plan per boot, in order, and always exactly
+    one in Milestone 0.
     """
 
     source_path: Path
+    source_sha256: str
     scenario: ScenarioV1
     boots: tuple[BootPlan, ...]
 
@@ -336,11 +339,14 @@ def _validate_payload_containment(scenario: ScenarioV1, scenario_dir: Path) -> l
 
 
 # ----------------------------------------------------------------------------------------------------
-def _read_scenario(path: Path) -> str:
+def _read_scenario(path: Path) -> tuple[str, str]:
     """Read the scenario as UTF-8 text, refusing anything over `MAX_SCENARIO_BYTES`.
 
     At most one byte past the limit is read, so even a huge file or a device such as
     `/dev/zero` is rejected without being read in full.
+
+    Returns:
+        The decoded text, and the SHA-256 of the exact bytes it was decoded from.
 
     Raises:
         ScenarioValidationError: At `$.source` if the file cannot be read, is too large, or is
@@ -364,7 +370,7 @@ def _read_scenario(path: Path) -> str:
             ]
         )
     try:
-        return document.decode("utf-8")
+        return document.decode("utf-8"), hashlib.sha256(document).hexdigest()
     except UnicodeDecodeError as e:
         raise ScenarioValidationError(
             [
@@ -397,7 +403,7 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
     """
     del environ  # Reserved; see the docstring.
     source_path = Path(path).expanduser().resolve()
-    document = _read_scenario(source_path)
+    document, source_sha256 = _read_scenario(source_path)
     try:
         # S506 flags yaml.load because unsafe loaders can build arbitrary objects; this
         # loader subclasses SafeLoader, so it cannot.
@@ -434,6 +440,7 @@ def load_scenario(path: str | Path, environ: Mapping[str, str] | None = None) ->
 
     return LoadedScenario(
         source_path=source_path,
+        source_sha256=source_sha256,
         scenario=scenario,
         boots=(scenario.to_boot_plan(),),
     )

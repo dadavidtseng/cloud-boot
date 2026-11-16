@@ -69,7 +69,9 @@ def assertion(status: AssertionStatus = "passed", *, required: bool = True) -> A
 def report(**overrides: Any) -> RunReportV1:
     fields: dict[str, Any] = {
         "run_id": "20261107T190512Z-a1b2c3d4",
-        "scenario": ScenarioIdentity(name="basic-boot", source_path="/s.yaml", source_sha256=None),
+        "scenario": ScenarioIdentity(
+            name="basic-boot", source_path="/s.yaml", source_sha256="0" * 64
+        ),
         "image": None,
         "started_at": STARTED,
         "finished_at": STARTED,
@@ -340,6 +342,21 @@ def test_report_records_a_failure_with_json_safe_context() -> None:
     assert failed.failure is not None
     assert failed.failure.context == {"path": "/run/x", "attempts": 4, "items": [1, "a"]}
     assert failed.exit_code == ExitCode.SSH
+
+
+def test_report_records_the_scenario_bytes_that_were_validated(tmp_path: Path) -> None:
+    scenario_file = tmp_path / "basic-boot.yaml"
+    scenario_file.write_text(
+        "scenario_version: 1\nname: basic-boot\nseed:\n  instance_id: i-1\n"
+        "  user_data:\n    inline: |\n      #cloud-config\n      {}\n"
+    )
+    validated = hashlib.sha256(scenario_file.read_bytes()).hexdigest()
+    loaded = load_scenario(scenario_file)
+
+    # The file changes while the run goes on; the report must still name what was run.
+    scenario_file.write_text(scenario_file.read_text().replace("i-1", "i-2"))
+
+    assert scenario_identity(loaded).source_sha256 == validated
 
 
 def test_write_report_persists_portable_evidence(tmp_path: Path) -> None:

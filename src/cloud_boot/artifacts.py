@@ -2,7 +2,13 @@
 # artifacts.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Run workspace: a private, contained directory for one run's evidence and transient assets."""
+"""Run workspace: a private, contained directory for one run's evidence and transient assets.
+
+Each run gets `<artifact root>/runs/<run ID>/`, mode 0700. Evidence (the report, console logs,
+the QEMU command line, collected guest logs) stays; `transient/` holds what only the run needs
+(seed media, the overlay, the SSH key pair, known hosts) and is removed when the run ends.
+Every path is checked to stay inside the run directory without crossing a symlink.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -58,7 +64,14 @@ class ArtifactError(CloudBootError):
 
 # ----------------------------------------------------------------------------------------------------
 def new_run_id(now: datetime, token: str) -> str:
-    """Return a sortable run ID such as `20261107T190512Z-a1b2c3d4` from a UTC time and token."""
+    """Return a sortable run ID such as `20261107T190512Z-a1b2c3d4` from a UTC time and token.
+
+    The fixed-width UTC timestamp makes IDs sort by start time; the token separates runs that
+    start in the same second.
+
+    Raises:
+        ValueError: If `now` has no time zone, so its moment is ambiguous.
+    """
     if now.utcoffset() is None:
         raise ValueError("run IDs need a timezone-aware time")
     return f"{now.astimezone(UTC):%Y%m%dT%H%M%SZ}-{token}"
@@ -77,6 +90,11 @@ class RunWorkspace:
     Every path handed out stays inside the run directory and has no symlink components, so a
     planted link cannot redirect a write elsewhere. Files are created 0600 and never overwrite an
     existing file, except through `write_text_atomic`, which replaces it in one step.
+
+    Use `create` for a new run; the constructor only wraps an existing run directory.
+
+    Args:
+        path: The run directory.
     """
 
     def __init__(self, path: Path) -> None:
@@ -91,6 +109,14 @@ class RunWorkspace:
         token_factory: TokenFactory = lambda: secrets.token_hex(4),
     ) -> RunWorkspace:
         """Allocate a new, uniquely named run directory and its `transient/` subdirectory.
+
+        `artifact_root` itself may be a symlink, for example to another disk; everything cloud-boot
+        creates below it must be a real directory.
+
+        Args:
+            artifact_root: Where `runs/` lives; created if missing.
+            wall_clock: Source of the run ID's timestamp.
+            token_factory: Source of the run ID's random suffix.
 
         Raises:
             ArtifactError: If the runs directory is unusable or no unique name could be created.
@@ -143,7 +169,8 @@ class RunWorkspace:
         """Return the path for a run-relative name after checking it cannot escape.
 
         Raises:
-            ValueError: If `relative` is empty, absolute, contains NUL or `..`, or crosses a symlink.
+            ValueError: If `relative` is empty, names the run directory itself, is absolute,
+                contains NUL or `..`, or crosses a symlink.
         """
         if not relative or "\x00" in relative:
             raise ValueError("artifact paths must be non-empty and free of NUL bytes")
@@ -175,6 +202,9 @@ class RunWorkspace:
     def make_dirs(self, relative: str) -> Path:
         """Create the run-relative directory and any missing parents with mode 0700.
 
+        Existing directories keep their mode. Each component is checked after creation, so a
+        symlink planted under that name is refused.
+
         Raises:
             ValueError: If the path escapes the run directory or crosses a symlink.
             ArtifactError: If a directory cannot be created.
@@ -199,6 +229,9 @@ class RunWorkspace:
     def open_new(self, relative: str) -> BufferedWriter:
         """Create a new 0600 file for streaming, such as the serial console log.
 
+        The caller owns the stream and must close it. O_EXCL never overwrites evidence, and
+        O_NOFOLLOW refuses a symlink planted after the path was checked.
+
         Raises:
             ValueError: If the path escapes the run directory or crosses a symlink.
             ArtifactError: If the file already exists or cannot be created.
@@ -216,6 +249,7 @@ class RunWorkspace:
         """Write a new 0600 file in one call, refusing to overwrite.
 
         Raises:
+            ValueError: If the path escapes the run directory or crosses a symlink.
             ArtifactError: If the file exists or cannot be written.
         """
         try:
@@ -277,10 +311,12 @@ class RunWorkspace:
         def record(_function: Callable[..., object], path: str, error: BaseException) -> None:
             warnings.append(f"could not remove {path}: {error}")
 
+        # rmtree removes links inside without following them (avoids_symlink_attacks on Linux).
         shutil.rmtree(transient, onexc=record)
         return warnings
 
     def _prepared_path(self, relative: str) -> Path:
+        """Check `relative` and create its parent directories, ready for a new file."""
         path = self.artifact_path(relative)
         parent = PurePosixPath(relative).parent
         if str(parent) != ".":
@@ -290,7 +326,11 @@ class RunWorkspace:
 
 # ----------------------------------------------------------------------------------------------------
 def _sync_directory(directory: Path) -> None:
-    # Best effort: the data is already durable; this only persists the rename itself.
+    """Persist a rename in `directory`, best effort.
+
+    The file's data is already durable. Some file systems refuse to sync a directory; then a
+    crash may only lose the rename, leaving the previous version in place.
+    """
     with contextlib.suppress(OSError):
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:

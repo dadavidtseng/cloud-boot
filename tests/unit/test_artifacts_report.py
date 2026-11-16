@@ -240,6 +240,21 @@ def test_cleanup_removes_transient_assets_and_keeps_evidence(tmp_path: Path) -> 
     assert (run.path / "report.json").exists()
 
 
+def test_cleanup_removes_a_symlinked_transient_without_following_it(tmp_path: Path) -> None:
+    run = workspace(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("not ours")
+    shutil.rmtree(run.transient_dir)
+    run.transient_dir.symlink_to(elsewhere)
+
+    warnings = run.cleanup_transient()
+
+    assert not run.transient_dir.is_symlink()
+    assert (elsewhere / "keep.txt").read_text() == "not ours"
+    assert warnings == [f"{run.transient_dir} was a symlink; removed the link only"]
+
+
 def test_cleanup_failures_become_warnings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = workspace(tmp_path)
     blocked = run.transient_dir / "overlay.qcow2"

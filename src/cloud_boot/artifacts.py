@@ -262,8 +262,14 @@ class RunWorkspace:
         transient = self.transient_dir
         warnings: list[str] = []
         if transient.is_symlink():
-            with contextlib.suppress(FileNotFoundError):
+            # Something replaced the directory; remove only the link, never what it points to.
+            warnings.append(f"{transient} was a symlink; removed the link only")
+            try:
                 transient.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                warnings.append(f"could not remove {transient}: {e}")
             return warnings
         if not transient.exists():
             return warnings

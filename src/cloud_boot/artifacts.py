@@ -166,7 +166,11 @@ class RunWorkspace:
         Raises:
             ValueError: If `path` is outside the run directory.
         """
-        return Path(path).relative_to(self._path).as_posix()
+        relative = Path(path).relative_to(self._path)
+        # relative_to compares text only, so "<run>/../x" would otherwise pass as "../x".
+        if ".." in relative.parts:
+            raise ValueError(f"path is outside the run directory: {path}")
+        return relative.as_posix()
 
     def make_dirs(self, relative: str) -> Path:
         """Create the run-relative directory and any missing parents with mode 0700.

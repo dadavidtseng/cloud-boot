@@ -262,6 +262,9 @@ def test_relative_references_stay_inside_the_run(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="subpath"):
         run.relative(tmp_path / "elsewhere.log")
+    # relative_to compares text only; a ".." inside the run path must still be refused.
+    with pytest.raises(ValueError, match="outside the run directory"):
+        run.relative(run.path / ".." / "elsewhere.log")
 
 
 @pytest.mark.parametrize(

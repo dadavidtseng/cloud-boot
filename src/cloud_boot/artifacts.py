@@ -241,7 +241,7 @@ class RunWorkspace:
                 raise ValueError(f"artifact directory is not a real directory: {relative!r}")
         return current
 
-    def _prepared_path(self, relative: str) -> Path:
+    def _prepare_path(self, relative: str) -> Path:
         """Check `relative` and create its parent directories, ready for a new file."""
         path = self.artifact_path(relative)
         parent = PurePosixPath(relative).parent
@@ -259,7 +259,7 @@ class RunWorkspace:
             ValueError: If the path escapes the run directory or crosses a symlink.
             ArtifactError: If the file already exists or cannot be created.
         """
-        path = self._prepared_path(relative)
+        path = self._prepare_path(relative)
         try:
             descriptor = os.open(
                 path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, _FILE_MODE
@@ -291,7 +291,7 @@ class RunWorkspace:
         Raises:
             ArtifactError: If any step fails; the previous file, if any, is left intact.
         """
-        path = self._prepared_path(relative)
+        path = self._prepare_path(relative)
         temporary: str | None = None
         try:
             descriptor, temporary = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)

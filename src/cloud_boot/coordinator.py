@@ -438,7 +438,7 @@ class RunCoordinator:
         """Run the steps in order, registering each resource's cleanup as soon as it exists.
 
         Cleanups run in reverse order, so the console closes after QEMU stops and the run key is
-        removed last. Each one goes through `_quietly`, so its failure is only a warning.
+        removed last. Each one goes through `_run_quietly`, so its failure is only a warning.
         """
         scenario = loaded.scenario
         plan = loaded.boots[0]
@@ -450,9 +450,9 @@ class RunCoordinator:
 
         self._progress("prepare", "creating the run key, seed media, and overlay")
         identity = deps.create_identity(
-            workspace.transient_dir, self._after(PREPARATION_TIMEOUT_SECONDS)
+            workspace.transient_dir, self._deadline_in(PREPARATION_TIMEOUT_SECONDS)
         )
-        cleanup.callback(self._quietly, state, "remove the run key", identity.destroy)
+        cleanup.callback(self._run_quietly, state, "remove the run key", identity.destroy)
         seed = deps.build_seed(
             plan, identity.public_key, loaded.source_path.parent, workspace.transient_dir
         )
@@ -461,13 +461,13 @@ class RunCoordinator:
             image,
             workspace.transient_dir,
             disk_gib=scenario.resources.disk_gib,
-            deadline=self._after(PREPARATION_TIMEOUT_SECONDS),
+            deadline=self._deadline_in(PREPARATION_TIMEOUT_SECONDS),
         )
 
         boot_dir = boot_directory(1, plan.name)
         console = workspace.open_new(f"{boot_dir}/console.log")
         # Registered before the VM starts, so the console closes only after QEMU has stopped.
-        cleanup.callback(self._quietly, state, "close the console log", console.close)
+        cleanup.callback(self._run_quietly, state, "close the console log", console.close)
         run_deadline = deps.clock() + scenario.timeout_seconds
         self._progress("boot", f"starting QEMU ({scenario.timeout_seconds} s limit)")
         handle = deps.vm_backend.start(
@@ -481,7 +481,7 @@ class RunCoordinator:
         )
         session: dict[str, GuestSession] = {}
         stop_guest = functools.partial(self._stop_guest, handle, session, workspace, boot_dir, state)
-        cleanup.callback(self._quietly, state, "stop the guest", stop_guest)
+        cleanup.callback(self._run_quietly, state, "stop the guest", stop_guest)
         workspace.write_text_atomic(
             f"{boot_dir}/qemu-command.json", json.dumps(list(handle.argv), indent=2) + "\n"
         )
@@ -511,12 +511,12 @@ class RunCoordinator:
                 context={"timeout_seconds": scenario.timeout_seconds},
             )
 
-    def _after(self, seconds: float) -> float:
+    def _deadline_in(self, seconds: float) -> float:
         """Return the monotonic deadline `seconds` from now."""
         return self._deps.clock() + seconds
 
     @staticmethod
-    def _quietly(state: _RunState, action: str, step: Callable[[], object]) -> None:
+    def _run_quietly(state: _RunState, action: str, step: Callable[[], object]) -> None:
         """Run one cleanup step; a failure becomes a warning, never the run's outcome.
 
         KeyboardInterrupt still propagates: the run is then reported as interrupted, and the
@@ -556,7 +556,7 @@ class RunCoordinator:
         # signal window: it then sends SIGTERM at once instead of waiting for the guest.
         budget = STOP_TIMEOUT_SECONDS if shutdown_requested else DEFAULT_TERMINATION_SECONDS
         try:
-            stopped = self._deps.vm_backend.stop(handle, deadline=self._after(budget))
+            stopped = self._deps.vm_backend.stop(handle, deadline=self._deadline_in(budget))
         except CloudBootError as e:
             state.warnings.append(f"QEMU did not stop cleanly: {e.message}")
             return

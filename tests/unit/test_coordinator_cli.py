@@ -133,6 +133,7 @@ class Harness:
         self.clock = FakeClock()
         self.workspace: RunWorkspace | None = None
         self.launch: VmLaunchSpec | None = None
+        self.stop_budget: float | None = None
 
     def _step(self, name: str) -> None:
         self.events.append(name)
@@ -200,6 +201,7 @@ class Harness:
 
     def stop(self, handle: VmHandle, *, deadline: float) -> StopResult:
         self._step("stop")
+        self.stop_budget = deadline - self.clock()
         result = CommandResult(
             argv=handle.argv, returncode=0, stdout=b"", stderr=b"qemu stderr", duration_seconds=1.0
         )
@@ -411,6 +413,19 @@ def test_assertions_that_never_ran_are_reported_as_blocked(
     entries = harness.report()["boots"][0]["assertions"]
     assert [entry["status"] for entry in entries] == ["blocked"] * 3
     assert all(entry["reason"].startswith("not run: ") for entry in entries)
+
+
+def test_stop_waits_for_the_guest_only_after_asking_it_to_power_off(
+    tmp_path: Path, scenario: LoadedScenario
+) -> None:
+    asked = Harness(tmp_path / "asked")
+    asked.run(scenario)
+    never_asked = Harness(tmp_path / "never", fail={"wait_ready": SshTransportError("unreachable")})
+    never_asked.run(scenario)
+
+    # Without a shutdown request the guest will not power off, so QEMU is signalled at once.
+    assert asked.stop_budget == 60.0
+    assert never_asked.stop_budget == 10.0
 
 
 def test_interrupt_is_its_own_phase_not_an_internal_error(

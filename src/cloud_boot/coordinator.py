@@ -40,7 +40,15 @@ from .report import (
 from .scenario import LoadedScenario
 from .seed import SeedArtifact, build_seed
 from .ssh import AccessIdentity, GuestResult, SshTransport, create_access_identity
-from .vm import DiskArtifact, QemuBackend, StopReason, StopResult, VmHandle, VmLaunchSpec
+from .vm import (
+    DEFAULT_TERMINATION_SECONDS,
+    DiskArtifact,
+    QemuBackend,
+    StopReason,
+    StopResult,
+    VmHandle,
+    VmLaunchSpec,
+)
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
@@ -461,16 +469,21 @@ class RunCoordinator:
         state: _RunState,
     ) -> None:
         guest = session.get("ready")
+        shutdown_requested = False
         if guest is not None:
             self._collect(guest, workspace, boot_dir, state)
             self._progress("shutdown", "asking the guest to power off")
             try:
                 guest.shutdown(timeout=SHUTDOWN_REQUEST_TIMEOUT_SECONDS)
+                shutdown_requested = True
             except CloudBootError as e:
                 state.warnings.append(f"guest shutdown request failed: {e.message}")
         self._progress("shutdown", "stopping QEMU")
+        # A guest that was never asked to power off will not, so give QemuBackend only its own
+        # signal window: it then sends SIGTERM at once instead of waiting for the guest.
+        budget = STOP_TIMEOUT_SECONDS if shutdown_requested else DEFAULT_TERMINATION_SECONDS
         try:
-            stopped = self._deps.vm_backend.stop(handle, deadline=self._after(STOP_TIMEOUT_SECONDS))
+            stopped = self._deps.vm_backend.stop(handle, deadline=self._after(budget))
         except CloudBootError as e:
             state.warnings.append(f"QEMU did not stop cleanly: {e.message}")
             return

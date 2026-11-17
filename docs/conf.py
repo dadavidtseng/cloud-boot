@@ -45,3 +45,6 @@ napoleon_numpy_docstring = False
 
 html_theme = "furo"
 html_title = "cloud-boot"
+# The published site, served by GitHub Pages (.github/workflows/pages.yml); Sphinx uses it for
+# canonical links.
+html_baseurl = "https://cloud-boot.dadavidtseng.com/"

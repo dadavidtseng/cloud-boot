@@ -224,7 +224,7 @@ class RunResult:
     """What the CLI needs: the exit code, where evidence lives, and what went wrong."""
 
     exit_code: int
-    outcome: Outcome | None
+    outcome: Outcome
     run_dir: Path | None
     report_path: Path | None
     failure: CloudBootError | None
@@ -305,11 +305,13 @@ def _xdg_base(environ: Mapping[str, str], variable: str, fallback: Path) -> Path
 
 
 # ----------------------------------------------------------------------------------------------------
-def production_dependencies(
-    *, cache_dir: Path, artifact_root: Path, runner: CommandRunner | None = None
-) -> RunDependencies:
-    """Wire the real host adapters: image cache, QEMU, SSH, and the run workspace."""
-    host = runner if runner is not None else CommandRunner()
+def production_dependencies(*, cache_dir: Path, artifact_root: Path) -> RunDependencies:
+    """Wire the real host adapters: image cache, QEMU, SSH, and the run workspace.
+
+    Every adapter shares one `CommandRunner` and the default monotonic clock, which
+    `QemuBackend` requires to measure its deadlines on the same timeline as its runner.
+    """
+    host = CommandRunner()
     return RunDependencies(
         preflight=check_host,
         create_workspace=lambda: RunWorkspace.create(artifact_root),

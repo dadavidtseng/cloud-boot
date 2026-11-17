@@ -2,7 +2,13 @@
 # coordinator.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Milestone 0 run coordinator: one scenario, one boot, one VM, one deterministic exit code."""
+"""Milestone 0 run coordinator: one scenario, one boot, one VM, one deterministic exit code.
+
+`RunCoordinator` sequences a run through the ports in `RunDependencies`, so tests drive it with
+fakes and `production_dependencies` wires the real image cache, QEMU, and SSH. Every resource
+registers its cleanup as soon as it exists; cleanup always runs, and the report is written after
+it, with the exit code the CLI returns.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -72,14 +78,16 @@ __all__ = [
 # ----------------------------------------------------------------------------------------------------
 REQUIRED_TOOLS = ("qemu-system-x86_64", "qemu-img", "ssh", "ssh-keygen")
 KVM_DEVICE = Path("/dev/kvm")
-# Fixed budgets outside the scenario timeout, so cleanup still runs after the run times out.
-PREPARATION_TIMEOUT_SECONDS = 60.0
+# Fixed budgets outside the scenario timeout, so cleanup still runs after the run times out. The
+# image download has its own budget in ImageStore.
+PREPARATION_TIMEOUT_SECONDS = 60.0  # Each of the run key and the overlay.
 COLLECTION_TIMEOUT_SECONDS = 30.0
 SHUTDOWN_REQUEST_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 60.0
 # How much of a guest's stderr a collection warning keeps; a warning is one line in the report.
 _WARNING_DETAIL_BYTES = 512
-# `cloud-init status --wait` exits non-zero for error and degraded states; assertions judge those.
+# `cloud-init status --wait` exits non-zero for error and degraded states, and the command is
+# missing on an image without cloud-init; either way the assertions judge the result.
 CLOUD_INIT_WAIT_SCRIPT = "cloud-init status --wait >/dev/null 2>&1\nexit 0\n"
 COLLECTED_LOGS = (
     ("/var/log/cloud-init.log", "cloud-init.log"),
@@ -155,7 +163,7 @@ class UnexpectedRunError(CloudBootError):
 
 # ----------------------------------------------------------------------------------------------------
 class ImageResolver(Protocol):
-    """Resolves the scenario's image to a verified local file (`ImageStore`)."""
+    """Resolves the scenario's image to a verified local file (`ImageStore`); the first step."""
 
     def resolve(self, spec: ImageSpec | None = ..., *, deadline: float | None = ...) -> VerifiedImage:
         """Return a verified cached or freshly downloaded image."""
@@ -164,7 +172,10 @@ class ImageResolver(Protocol):
 
 # ----------------------------------------------------------------------------------------------------
 class VmBackend(Protocol):
-    """Creates the overlay and starts and stops the guest (`QemuBackend`)."""
+    """Creates the overlay and starts and stops the guest (`QemuBackend`).
+
+    `prepare` runs before boot, `start` boots the guest, and `stop` runs during cleanup.
+    """
 
     def prepare(
         self, image: VerifiedImage, run_dir: str | Path, *, disk_gib: int, deadline: float
@@ -183,7 +194,11 @@ class VmBackend(Protocol):
 
 # ----------------------------------------------------------------------------------------------------
 class GuestSession(Protocol):
-    """Talks to the running guest (`SshTransport`)."""
+    """Talks to the running guest (`SshTransport`), from SSH readiness to shutdown.
+
+    Assertions get only the narrower `GuestTransport`, which can run scripts but not copy files
+    or power the guest off.
+    """
 
     def wait_ready(self, *, deadline: float) -> int:
         """Wait until the guest accepts commands."""
@@ -205,7 +220,19 @@ class GuestSession(Protocol):
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class RunDependencies:
-    """Every port the coordinator uses; production wiring and test fakes both fill this."""
+    """Every port the coordinator uses; production wiring and test fakes both fill this.
+
+    Attributes:
+        preflight: Checks host commands and KVM access.
+        create_workspace: Allocates the run directory.
+        image_store: Resolves the scenario's image.
+        create_identity: `(run_dir, deadline)` to the run's SSH key pair.
+        build_seed: `(plan, public_key, scenario_dir, output_dir)` to the seed media.
+        vm_backend: Creates the overlay and starts and stops the guest.
+        connect: `(identity, handle)` to a session with the running guest.
+        clock: Monotonic clock for every deadline.
+        wall_clock: Source of the report's timestamps.
+    """
 
     preflight: Callable[[], None]
     create_workspace: Callable[[], RunWorkspace]
@@ -221,7 +248,16 @@ class RunDependencies:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class RunResult:
-    """What the CLI needs: the exit code, where evidence lives, and what went wrong."""
+    """What the CLI needs: the exit code, where evidence lives, and what went wrong.
+
+    Attributes:
+        exit_code: The process exit code.
+        outcome: `passed`, `failed`, or `error`.
+        run_dir: The run directory, or `None` if the run failed before creating it.
+        report_path: The written report, or `None` if it was never written.
+        failure: The error that ended the run, or `None`.
+        assertions: Every assertion result, for the CLI's summary.
+    """
 
     exit_code: int
     outcome: Outcome
@@ -234,6 +270,8 @@ class RunResult:
 # ----------------------------------------------------------------------------------------------------
 @dataclass(slots=True)
 class _RunState:
+    """What the run has learned so far, so a run that fails midway still reports it."""
+
     image: VerifiedImage | None = None
     seed: SeedArtifact | None = None
     stop_reason: StopReason | None = None
@@ -243,7 +281,12 @@ class _RunState:
 
 # ----------------------------------------------------------------------------------------------------
 class _DeadlineSession:
-    """Caps every guest command at the time left before the run deadline."""
+    """Caps every guest command at the time left before the run deadline.
+
+    Once the deadline has passed it refuses the command with a `ProcessTimeoutError` that has
+    no `result`: `run_assertions` relies on that to block the remaining assertions instead of
+    reporting them as timed out.
+    """
 
     def __init__(self, session: GuestSession, deadline: float, clock: Clock) -> None:
         self._session = session
@@ -265,6 +308,9 @@ def check_host(
     access: Callable[[Path, int], bool] = os.access,
 ) -> None:
     """Check the commands and KVM access a run needs, reporting every problem at once.
+
+    Whether KVM actually works is known only when QEMU starts; a failure there is a
+    `VmLaunchError`.
 
     Raises:
         HostUnavailableError: If any command is missing or `/dev/kvm` is not usable.
@@ -297,7 +343,10 @@ def default_artifact_root(environ: Mapping[str, str]) -> Path:
 
 # ----------------------------------------------------------------------------------------------------
 def _xdg_base(environ: Mapping[str, str], variable: str, fallback: Path) -> Path:
-    # The XDG specification says relative values are invalid and must be ignored.
+    """Return the XDG base directory in `variable`, or `fallback` under the home directory.
+
+    An empty or relative value is ignored, as the XDG specification requires.
+    """
     value = environ.get(variable, "")
     if value and Path(value).is_absolute():
         return Path(value)
@@ -343,7 +392,12 @@ class RunCoordinator:
         self._progress = progress if progress is not None else (lambda _phase, _message: None)
 
     def run(self, loaded: LoadedScenario) -> RunResult:
-        """Run the scenario's single boot and return its exit code and evidence location."""
+        """Run the scenario's single boot and return its exit code and evidence location.
+
+        A failure in preflight or while creating the run directory returns at once, with no run
+        directory and no report. After that, cleanup always runs and a report is always
+        attempted, and every declared assertion appears in it.
+        """
         try:
             self._progress("preflight", "checking host commands and KVM access")
             self._deps.preflight()
@@ -381,6 +435,11 @@ class RunCoordinator:
         state: _RunState,
         cleanup: contextlib.ExitStack,
     ) -> None:
+        """Run the steps in order, registering each resource's cleanup as soon as it exists.
+
+        Cleanups run in reverse order, so the console closes after QEMU stops and the run key is
+        removed last. Each one goes through `_quietly`, so its failure is only a warning.
+        """
         scenario = loaded.scenario
         plan = loaded.boots[0]
         deps = self._deps
@@ -472,6 +531,12 @@ class RunCoordinator:
         boot_dir: str,
         state: _RunState,
     ) -> None:
+        """Collect the guest logs, ask the guest to power off, then stop QEMU and keep its stderr.
+
+        Logs and the shutdown request need SSH, so they are skipped if it never became ready.
+        QEMU is then signalled at once instead of waiting for a guest that was not asked to stop.
+        Every problem becomes a warning.
+        """
         guest = session.get("ready")
         shutdown_requested = False
         if guest is not None:
@@ -502,6 +567,7 @@ class RunCoordinator:
     def _collect(
         self, guest: GuestSession, workspace: RunWorkspace, boot_dir: str, state: _RunState
     ) -> None:
+        """Copy the cloud-init logs while the guest is still up; a failure is only a warning."""
         self._progress("collect", "copying cloud-init logs")
         for remote, name in COLLECTED_LOGS:
             try:
@@ -526,6 +592,12 @@ class RunCoordinator:
         started_at: datetime,
         started: float,
     ) -> RunResult:
+        """Decide the outcome, build the report, and write it; runs after every cleanup.
+
+        The report lists every file the run left, except itself; `transient/` is already gone.
+        If the report model refuses the fields, the coordinator has a bug: the `ValidationError`
+        propagates and the CLI exits 10 without a report.
+        """
         plan = loaded.boots[0]
         outcome, exit_code = decide_outcome(failure=failure, assertions=state.assertions)
         artifacts = sorted(
@@ -575,4 +647,5 @@ class RunCoordinator:
         )
 
     def _after(self, seconds: float) -> float:
+        """Return the monotonic deadline `seconds` from now."""
         return self._deps.clock() + seconds

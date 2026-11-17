@@ -70,3 +70,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.report
 ```
+
+## Run coordinator
+
+```{eval-rst}
+.. automodule:: cloud_boot.coordinator
+```

@@ -33,6 +33,7 @@ from .process import (
     ProcessTimeoutError,
     Sleeper,
     StreamSinks,
+    tail_text,
 )
 
 # ----------------------------------------------------------------------------------------------------
@@ -172,6 +173,10 @@ class GuestResult:
     duration_seconds: float
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
+
+    def stderr_tail(self, limit: int = 2048) -> str:
+        """Decode the last `limit` bytes of the guest's stderr for a message."""
+        return tail_text(self.stderr, limit)
 
 
 # ----------------------------------------------------------------------------------------------------

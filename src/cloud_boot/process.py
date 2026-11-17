@@ -51,6 +51,7 @@ __all__ = [
     "SinkFailure",
     "Sleeper",
     "StreamSinks",
+    "tail_text",
 ]
 
 # ----------------------------------------------------------------------------------------------------
@@ -362,6 +363,15 @@ class CommandSpec:
 
 
 # ----------------------------------------------------------------------------------------------------
+def tail_text(data: bytes, limit: int) -> str:
+    """Decode the last `limit` bytes of `data`, such as a command's stderr, for a message.
+
+    A multibyte character cut at the boundary decodes as U+FFFD instead of raising.
+    """
+    return data[-limit:].decode("utf-8", errors="replace")
+
+
+# ----------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class CommandResult:
     """What a finished child process did. Nothing here is interpreted; callers decide meaning.
@@ -393,7 +403,7 @@ class CommandResult:
 
         A multibyte character cut at the boundary decodes as U+FFFD instead of raising.
         """
-        return self.stderr[-limit:].decode("utf-8", errors="replace")
+        return tail_text(self.stderr, limit)
 
 
 # ----------------------------------------------------------------------------------------------------

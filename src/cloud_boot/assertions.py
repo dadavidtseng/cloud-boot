@@ -388,7 +388,7 @@ def _unobservable_reason(result: GuestResult, what: str) -> str | None:
 # ----------------------------------------------------------------------------------------------------
 def _stderr_text(result: GuestResult) -> str:
     """Return the end of the guest's stderr, trimmed for a one-line reason."""
-    return result.stderr[-_STDERR_REASON_BYTES:].decode("utf-8", errors="replace").strip()
+    return result.stderr_tail(_STDERR_REASON_BYTES).strip()
 
 
 # ----------------------------------------------------------------------------------------------------

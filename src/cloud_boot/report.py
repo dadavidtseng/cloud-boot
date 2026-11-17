@@ -21,10 +21,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, field_vali
 
 from .artifacts import RunWorkspace
 from .assertions import AssertionResult, all_required_passed
-from .errors import CloudBootError, ExitCode
+from .errors import CloudBootError, ErrorPhase, ExitCode
 from .image_store import VerifiedImage
 from .scenario import LoadedScenario
 from .seed import SeedArtifact
+from .vm import StopReason
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
@@ -109,7 +110,7 @@ class BootResult(_ReportModel):
     index: int
     instance_id: str | None
     seed_digests: dict[str, str]
-    stop_reason: str | None
+    stop_reason: StopReason | None
     assertions: list[AssertionResult]
 
 
@@ -139,7 +140,7 @@ class FailureRecord(_ReportModel):
     """
 
     code: str
-    phase: str
+    phase: ErrorPhase
     message: str
     remediation: str | None
     exit_code: int
@@ -150,7 +151,7 @@ class FailureRecord(_ReportModel):
         """Build a record whose context holds only JSON values; anything else becomes text."""
         return cls(
             code=error.code,
-            phase=error.phase,
+            phase=ErrorPhase(error.phase),
             message=error.message,
             remediation=error.remediation,
             exit_code=error.exit_code,

@@ -34,6 +34,7 @@ from cloud_boot.report import (
 from cloud_boot.scenario import load_scenario
 from cloud_boot.seed import SeedArtifact, SeedFile
 from cloud_boot.ssh import SshTransportError
+from cloud_boot.vm import StopReason
 
 STARTED = datetime(2026, 11, 7, 19, 5, 12, tzinfo=UTC)
 
@@ -84,7 +85,7 @@ def report(**overrides: Any) -> RunReportV1:
                 index=1,
                 instance_id="i-1",
                 seed_digests={},
-                stop_reason="exited",
+                stop_reason=StopReason.EXITED,
                 assertions=[assertion()],
             )
         ],
@@ -345,6 +346,27 @@ def test_report_records_a_failure_with_json_safe_context() -> None:
     assert failed.exit_code == ExitCode.SSH
 
 
+def test_report_refuses_an_unknown_phase_or_stop_reason() -> None:
+    with pytest.raises(ValidationError):
+        FailureRecord(
+            code="x",
+            phase="nowhere",  # type: ignore[arg-type]
+            message="m",
+            remediation=None,
+            exit_code=10,
+            context={},
+        )
+    with pytest.raises(ValidationError):
+        BootResult(
+            name="boot",
+            index=1,
+            instance_id="i-1",
+            seed_digests={},
+            stop_reason="vanished",  # type: ignore[arg-type]
+            assertions=[],
+        )
+
+
 def test_report_records_the_scenario_bytes_that_were_validated(tmp_path: Path) -> None:
     scenario_file = tmp_path / "basic-boot.yaml"
     scenario_file.write_text(
@@ -397,7 +419,7 @@ def test_write_report_persists_portable_evidence(tmp_path: Path) -> None:
                     index=1,
                     instance_id="i-1",
                     seed_digests=seed_digests(seed),
-                    stop_reason="exited",
+                    stop_reason=StopReason.EXITED,
                     assertions=results,
                 )
             ],

@@ -39,7 +39,7 @@ from .report import (
 from .scenario import LoadedScenario
 from .seed import SeedArtifact, build_seed
 from .ssh import AccessIdentity, GuestResult, SshTransport, SshTransportError, create_access_identity
-from .vm import DiskArtifact, QemuBackend, StopResult, VmHandle, VmLaunchSpec
+from .vm import DiskArtifact, QemuBackend, StopReason, StopResult, VmHandle, VmLaunchSpec
 
 # ----------------------------------------------------------------------------------------------------
 __all__ = [
@@ -225,7 +225,7 @@ class RunResult:
 class _RunState:
     image: VerifiedImage | None = None
     seed: SeedArtifact | None = None
-    stop_reason: str | None = None
+    stop_reason: StopReason | None = None
     assertions: list[AssertionResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -464,7 +464,7 @@ class RunCoordinator:
         except CloudBootError as e:
             state.warnings.append(f"QEMU did not stop cleanly: {e.message}")
             return
-        state.stop_reason = str(stopped.reason)
+        state.stop_reason = stopped.reason
         for failure in stopped.result.sink_failures:
             state.warnings.append(f"console log {failure.stream} write failed: {failure.error}")
         try:

@@ -6,7 +6,7 @@
 
 This module holds only the base error, its phases, and the exit-code table, and imports nothing
 else from the package. Each component defines its own `CloudBootError` subclasses next to the code
-that raises them, so callers can handle every expected failure through one stable shape.
+that raises them, so callers can handle every *expected failure* through one stable shape.
 """
 
 # ----------------------------------------------------------------------------------------------------

@@ -401,6 +401,18 @@ def test_cleanup_failure_never_replaces_the_outcome(
     )
 
 
+def test_assertions_that_never_ran_are_reported_as_blocked(
+    tmp_path: Path, scenario: LoadedScenario
+) -> None:
+    harness = Harness(tmp_path, fail={"cloud-init": ProcessTimeoutError()})
+
+    harness.run(scenario)
+
+    entries = harness.report()["boots"][0]["assertions"]
+    assert [entry["status"] for entry in entries] == ["blocked"] * 3
+    assert all(entry["reason"].startswith("not run: ") for entry in entries)
+
+
 def test_interrupt_is_its_own_phase_not_an_internal_error(
     tmp_path: Path, scenario: LoadedScenario
 ) -> None:

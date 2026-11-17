@@ -39,7 +39,7 @@ from .report import (
 )
 from .scenario import LoadedScenario
 from .seed import SeedArtifact, build_seed
-from .ssh import AccessIdentity, GuestResult, SshTransport, SshTransportError, create_access_identity
+from .ssh import AccessIdentity, GuestResult, SshTransport, create_access_identity
 from .vm import DiskArtifact, QemuBackend, StopReason, StopResult, VmHandle, VmLaunchSpec
 
 # ----------------------------------------------------------------------------------------------------
@@ -352,6 +352,13 @@ class RunCoordinator:
             failure = RunInterruptedError()
         except Exception as e:
             failure = UnexpectedRunError(e)
+        if failure is not None and not state.assertions:
+            # Every declared assertion appears in the report; those that never ran are blocked.
+            state.assertions = block_all(
+                loaded.boots[0].assertions,
+                boot=loaded.boots[0].name,
+                reason=f"not run: {failure.message}",
+            )
         state.warnings.extend(workspace.cleanup_transient())
         return self._finish(loaded, workspace, state, failure, started_at, started)
 
@@ -410,13 +417,7 @@ class RunCoordinator:
 
         guest = deps.connect(identity, handle)
         self._progress("ssh", f"waiting for SSH on {handle.ssh_host}:{handle.ssh_port}")
-        try:
-            guest.wait_ready(deadline=run_deadline)
-        except SshTransportError as e:
-            state.assertions = block_all(
-                plan.assertions, boot=plan.name, reason=f"SSH never became ready: {e.message}"
-            )
-            raise
+        guest.wait_ready(deadline=run_deadline)
         session["ready"] = guest
         capped = _DeadlineSession(guest, run_deadline, deps.clock)
 
@@ -429,11 +430,6 @@ class RunCoordinator:
                 phase=ErrorPhase.VM,
                 context={"timeout_seconds": scenario.timeout_seconds},
             ) from e
-        except SshTransportError as e:
-            state.assertions = block_all(
-                plan.assertions, boot=plan.name, reason=f"SSH transport unavailable: {e.message}"
-            )
-            raise
 
         self._progress("assertions", f"evaluating {len(plan.assertions)} assertions")
         state.assertions = run_assertions(plan.assertions, capped, boot=plan.name, clock=deps.clock)

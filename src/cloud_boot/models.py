@@ -13,7 +13,6 @@ YAML and Pydantic would otherwise silently turn `"2"` into 2 or `yes` into True.
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
 
-from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal
 
@@ -32,7 +31,6 @@ from pydantic import (
 __all__ = [
     "AssertionSpec",
     "BootPlan",
-    "CloudInitState",
     "CloudInitStatusAssertion",
     "FileAssertion",
     "ImageSpec",
@@ -202,16 +200,6 @@ class SeedSpec(StrictModel):
 
 
 # ----------------------------------------------------------------------------------------------------
-class CloudInitState(StrEnum):
-    """Terminal cloud-init states a boot may expect; used only by `BootPlan`, not yet read."""
-
-    DONE = "done"
-    DEGRADED = "degraded"
-    ERROR = "error"
-    DISABLED = "disabled"
-
-
-# ----------------------------------------------------------------------------------------------------
 class AssertionBase(StrictModel):
     """Fields every assertion has: its ID, whether it counts, and its own time limit.
 
@@ -308,17 +296,14 @@ class BootPlan(StrictModel):
     boots will produce one plan per boot, so components already handle plans rather than raw
     scenarios. `name` names the boot's artifact directory, such as `boots/001-boot`.
 
-    `wait_for_cloud_init` and `expected_cloud_init_states` are reserved for multi-boot
-    scenarios. Nothing reads them yet: the runner always waits for cloud-init, and the
-    cloud-init status assertion decides what counts as success.
+    `wait_for_cloud_init` is reserved for multi-boot scenarios. Nothing reads it yet: the
+    runner always waits for cloud-init, and the cloud-init status assertion decides what
+    counts as success.
     """
 
     name: Identifier
     seed: SeedSpec
     wait_for_cloud_init: StrictBool = True
-    expected_cloud_init_states: frozenset[CloudInitState] = Field(
-        default_factory=lambda: frozenset({CloudInitState.DONE}), min_length=1
-    )
     assertions: list[AssertionSpec] = Field(default_factory=list, max_length=100)
 
 

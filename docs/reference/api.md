@@ -76,3 +76,9 @@ reference is for contributors and includes private members.
 ```{eval-rst}
 .. automodule:: cloud_boot.coordinator
 ```
+
+## Command line
+
+```{eval-rst}
+.. automodule:: cloud_boot.cli
+```

@@ -121,6 +121,34 @@ The exit code always matches `exit_code` in `report.json` when a run directory w
 | 10 | Unexpected internal error |
 | 130 | Interrupted with Ctrl-C (once a run has started, cleanup and the report still run) |
 
+## Architecture at a glance
+
+`RunCoordinator` drives one run through small modules, each owning one concern:
+
+```text
+cli ── load_scenario ──► RunCoordinator.run
+                           ├─ image_store   download the image, verify SHA256SUMS, cache by digest
+                           ├─ ssh           make the run's own SSH key pair
+                           ├─ seed          build the NoCloud ISO (meta-data, user-data, ...)
+                           ├─ vm            create the qcow2 overlay, start and stop QEMU/KVM
+                           ├─ ssh           wait for the guest, run checks, copy logs
+                           ├─ assertions    run fixed guest scripts: passed, failed, or blocked
+                           ├─ artifacts     keep evidence in the run directory, delete transient/
+                           └─ report        decide the outcome and exit code, write report.json
+```
+
+- **Ports, not hosts:** the coordinator sees the image cache, QEMU, and SSH only through the
+  interfaces in `RunDependencies`, so its tests run with fakes and no VM.
+- **Cleanup always runs:** each resource registers its cleanup when it is created. A cleanup
+  failure becomes a warning; it never changes the outcome.
+- **Nothing passes without running:** a check that could not run is `blocked`, and every
+  declared assertion appears in the report.
+- **One source of truth for the exit code:** the CLI's exit code and the report's come from
+  the same decision.
+
+The [API reference](https://cloud-boot.dadavidtseng.com/reference/api.html) documents every
+module.
+
 ## The basic scenario
 
 [`scenarios/basic-boot.yaml`](scenarios/basic-boot.yaml) needs no guest network access: its
@@ -162,6 +190,12 @@ when it skips, and never reports a skipped boot as passed:
 
 ```bash
 CLOUD_BOOT_E2E=1 uv run pytest tests/e2e -v
+```
+
+Build the documentation site, published at <https://cloud-boot.dadavidtseng.com>:
+
+```bash
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
 ```
 
 ## License

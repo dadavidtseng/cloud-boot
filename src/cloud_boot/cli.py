@@ -129,6 +129,10 @@ def main(
         return _run(
             args.scenario, out, err, environ if environ is not None else os.environ, runner_factory
         )
+    except KeyboardInterrupt:
+        # Interrupted outside a run, such as while loading the scenario or checking the host.
+        err.write(f"ERROR {ErrorPhase.INTERRUPT}: interrupted\n")
+        return int(ExitCode.SIGINT)
     except Exception as e:
         err.write(f"ERROR {ErrorPhase.INTERNAL}: unexpected {type(e).__name__}: {e}\n")
         return int(ExitCode.INTERNAL)

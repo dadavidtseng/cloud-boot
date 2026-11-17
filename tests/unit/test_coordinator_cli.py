@@ -690,3 +690,18 @@ def test_cli_unexpected_error_is_exit_10(tmp_path: Path) -> None:
 
     assert code == ExitCode.INTERNAL
     assert "ERROR internal: unexpected RuntimeError: wiring bug" in stderr
+
+
+def test_cli_interrupt_outside_a_run_is_exit_130(tmp_path: Path) -> None:
+    scenario_file = tmp_path / "basic-boot.yaml"
+    scenario_file.write_text(SCENARIO)
+
+    def interrupted(_progress: Any, _environ: Mapping[str, str]) -> Any:
+        # For example, Ctrl-C while the host is checked, before the run handles interrupts.
+        raise KeyboardInterrupt
+
+    code, stdout, stderr = run_cli(["run", str(scenario_file)], runner_factory=interrupted)
+
+    assert code == ExitCode.SIGINT
+    assert stdout == ""
+    assert stderr == "ERROR interrupt: interrupted\n"

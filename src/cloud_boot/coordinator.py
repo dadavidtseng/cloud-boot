@@ -511,6 +511,10 @@ class RunCoordinator:
                 context={"timeout_seconds": scenario.timeout_seconds},
             )
 
+    def _after(self, seconds: float) -> float:
+        """Return the monotonic deadline `seconds` from now."""
+        return self._deps.clock() + seconds
+
     @staticmethod
     def _quietly(state: _RunState, action: str, step: Callable[[], object]) -> None:
         """Run one cleanup step; a failure becomes a warning, never the run's outcome.
@@ -645,7 +649,3 @@ class RunCoordinator:
         return RunResult(
             exit_code, outcome, workspace.path, report_path, failure, tuple(state.assertions)
         )
-
-    def _after(self, seconds: float) -> float:
-        """Return the monotonic deadline `seconds` from now."""
-        return self._deps.clock() + seconds

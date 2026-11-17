@@ -123,8 +123,8 @@ def main(
     err = stderr if stderr is not None else sys.stderr
     try:
         args = build_parser(stdout=out, stderr=err).parse_args(argv)
-    except _ParserExit as exit_request:
-        return exit_request.status
+    except _ParserExit as e:
+        return e.status
     try:
         return _run(
             args.scenario, out, err, environ if environ is not None else os.environ, runner_factory

@@ -26,11 +26,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
 from .errors import CloudBootError, ErrorPhase, ExitCode
 from .image_store import VerifiedImage
-from .models import ResourceSpec
+from .models import NetworkMode, ResourceSpec
 from .process import (
     ByteWriter,
     Clock,
@@ -147,7 +146,7 @@ class VmLaunchSpec:
     resources: ResourceSpec
     console: ConsoleSink
     name: str = "cloud-boot"
-    network_mode: Literal["nat"] = "nat"
+    network_mode: NetworkMode = "nat"
 
     def __post_init__(self) -> None:
         if self.network_mode != "nat":

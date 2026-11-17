@@ -34,6 +34,7 @@ __all__ = [
     "CloudInitStatusAssertion",
     "FileAssertion",
     "ImageSpec",
+    "NetworkMode",
     "PackageInstalledAssertion",
     "PayloadSpec",
     "ResourceSpec",
@@ -51,6 +52,10 @@ type Identifier = Annotated[
 
 # The whole run's time limit: 1 second to 1 hour. Assertions have their own, shorter limit.
 type PositiveTimeout = Annotated[StrictInt, Field(ge=1, le=3600)]
+
+# The guest's network mode, shared with the VM backend so both change together; Task 22
+# adds "restricted".
+type NetworkMode = Literal["nat"]
 
 # A DNS host name (RFC 1123): dot-separated labels of 1-63 letters, digits, or hyphens, each
 # starting and ending with a letter or digit. The 253-character total is checked separately.
@@ -329,7 +334,7 @@ class ScenarioV1(StrictModel):
     description: Annotated[StrictStr, Field(max_length=4096)] | None = None
     image: ImageSpec = Field(default_factory=ImageSpec)
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
-    network_mode: Literal["nat"] = "nat"
+    network_mode: NetworkMode = "nat"
     timeout_seconds: PositiveTimeout = 300
     seed: SeedSpec
     assertions: list[AssertionSpec] = Field(default_factory=list, max_length=100)

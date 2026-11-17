@@ -30,7 +30,7 @@ from cloud_boot.coordinator import (
     default_artifact_root,
     default_cache_dir,
 )
-from cloud_boot.errors import ExitCode
+from cloud_boot.errors import ErrorPhase, ExitCode
 from cloud_boot.image_store import ImageStoreError, VerifiedImage
 from cloud_boot.models import BootPlan, ImageSpec
 from cloud_boot.process import CommandResult, ProcessTimeoutError
@@ -379,7 +379,19 @@ def test_cloud_init_timeout_still_collects_diagnostics(
     assert result.exit_code == ExitCode.TIMEOUT
     assert result.failure is not None
     assert "waiting for cloud-init" in result.failure.message
+    assert result.failure.phase == ErrorPhase.VM
     assert harness.events[-5:] == SUCCESS_EVENTS[-5:]
+
+
+def test_interrupt_is_its_own_phase_not_an_internal_error(
+    tmp_path: Path, scenario: LoadedScenario
+) -> None:
+    harness = Harness(tmp_path, fail={"wait_ready": KeyboardInterrupt()})
+
+    result = harness.run(scenario)
+
+    assert result.exit_code == ExitCode.SIGINT
+    assert harness.report()["failure"]["phase"] == "interrupt"
 
 
 def test_run_deadline_bounds_the_assertions(tmp_path: Path, scenario: LoadedScenario) -> None:
@@ -391,6 +403,8 @@ def test_run_deadline_bounds_the_assertions(tmp_path: Path, scenario: LoadedScen
     assert result.exit_code == ExitCode.TIMEOUT
     report = harness.report()
     assert report["exit_code"] == 8
+    # The run ran out of time during assertions, so that is where the report points.
+    assert report["failure"]["phase"] == "assertion"
     statuses = [entry["status"] for entry in report["boots"][0]["assertions"]]
     assert statuses[0] == "passed"
     assert "assert:package" not in harness.events

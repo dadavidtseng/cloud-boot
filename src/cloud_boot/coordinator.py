@@ -100,13 +100,15 @@ class HostUnavailableError(CloudBootError):
 
 # ----------------------------------------------------------------------------------------------------
 class RunTimeoutError(CloudBootError):
-    """The run exceeded the scenario's time limit."""
+    """The run exceeded the scenario's time limit, in the phase it was in at the time."""
 
-    def __init__(self, message: str, *, context: Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self, message: str, *, phase: ErrorPhase, context: Mapping[str, object] | None = None
+    ) -> None:
         super().__init__(
             message,
             code="run-timeout",
-            phase=ErrorPhase.VM,
+            phase=phase,
             remediation="Raise the scenario's timeout_seconds or inspect the console log.",
             context=context,
             exit_code=ExitCode.TIMEOUT,
@@ -121,7 +123,7 @@ class RunInterruptedError(CloudBootError):
         super().__init__(
             "the run was interrupted",
             code="run-interrupted",
-            phase=ErrorPhase.INTERNAL,
+            phase=ErrorPhase.INTERRUPT,
             exit_code=ExitCode.SIGINT,
         )
 
@@ -422,6 +424,7 @@ class RunCoordinator:
         except ProcessTimeoutError as e:
             raise RunTimeoutError(
                 "the run reached its time limit while waiting for cloud-init",
+                phase=ErrorPhase.VM,
                 context={"timeout_seconds": scenario.timeout_seconds},
             ) from e
         except SshTransportError as e:
@@ -435,6 +438,7 @@ class RunCoordinator:
         if deps.clock() > run_deadline:
             raise RunTimeoutError(
                 "the run exceeded its time limit during assertions",
+                phase=ErrorPhase.ASSERTION,
                 context={"timeout_seconds": scenario.timeout_seconds},
             )
 

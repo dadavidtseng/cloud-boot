@@ -30,11 +30,12 @@ class ErrorPhase(StrEnum):
     `ErrorPhase` tells a reader where to look; it does not choose the exit code. The two are
     independent on purpose: a timeout can happen in any phase but always exits with
     `ExitCode.TIMEOUT`, and a `PROCESS` failure exits with `HOST_UNAVAILABLE` when a command
-    cannot start or `TIMEOUT` when it runs out of time. `INTERNAL` marks a cloud-boot bug and is
-    the default for an unclassified error.
+    cannot start or `TIMEOUT` when it runs out of time. `INTERRUPT` marks a run the user stopped.
+    `INTERNAL` marks a cloud-boot bug and is the default for an unclassified error.
 
-    A failed assertion is a run outcome, not an error, so nothing raises `ASSERTION` yet.
-    Scenario validation fails before any run exists and is reported by the CLI directly.
+    A failed assertion is a run outcome, not an error; `ASSERTION` marks only a run that ran out
+    of time while assertions were being checked. Scenario validation fails before any run exists
+    and is reported by the CLI directly.
 
     Values appear in `report.json` and on stderr as `ERROR <phase>: ...`, so renaming one is a
     breaking change to the report schema.
@@ -48,6 +49,7 @@ class ErrorPhase(StrEnum):
     SSH = "ssh"
     ASSERTION = "assertion"
     ARTIFACT = "artifact"
+    INTERRUPT = "interrupt"
     INTERNAL = "internal"
 
 

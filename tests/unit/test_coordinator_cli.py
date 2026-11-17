@@ -428,6 +428,23 @@ def test_stop_waits_for_the_guest_only_after_asking_it_to_power_off(
     assert never_asked.stop_budget == 10.0
 
 
+def test_collection_warnings_keep_only_the_end_of_the_guest_error(
+    tmp_path: Path, scenario: LoadedScenario
+) -> None:
+    harness = Harness(tmp_path)
+
+    def failing_copy(remote: str, local: str | Path, *, timeout: float = 60.0) -> GuestResult:
+        return GuestResult(exit_status=1, stdout=b"", stderr=b"x" * 65536, duration_seconds=0.1)
+
+    harness.copy_from = failing_copy  # type: ignore[method-assign]
+
+    harness.run(scenario)
+
+    warnings = [w for w in harness.report()["warnings"] if w.startswith("could not collect")]
+    assert len(warnings) == 2
+    assert all(len(warning) < 1024 for warning in warnings)
+
+
 def test_interrupt_is_its_own_phase_not_an_internal_error(
     tmp_path: Path, scenario: LoadedScenario
 ) -> None:

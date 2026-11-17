@@ -77,6 +77,8 @@ PREPARATION_TIMEOUT_SECONDS = 60.0
 COLLECTION_TIMEOUT_SECONDS = 30.0
 SHUTDOWN_REQUEST_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 60.0
+# How much of a guest's stderr a collection warning keeps; a warning is one line in the report.
+_WARNING_DETAIL_BYTES = 512
 # `cloud-init status --wait` exits non-zero for error and degraded states; assertions judge those.
 CLOUD_INIT_WAIT_SCRIPT = "cloud-init status --wait >/dev/null 2>&1\nexit 0\n"
 COLLECTED_LOGS = (
@@ -510,7 +512,7 @@ class RunCoordinator:
                 state.warnings.append(f"could not collect {remote}: {e.message}")
                 continue
             if result.exit_status != 0:
-                detail = result.stderr.decode("utf-8", errors="replace").strip()
+                detail = result.stderr_tail(_WARNING_DETAIL_BYTES).strip()
                 state.warnings.append(f"could not collect {remote}: {detail or result.exit_status}")
 
     def _finish(

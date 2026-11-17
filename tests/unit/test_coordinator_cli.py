@@ -472,6 +472,31 @@ def test_run_deadline_bounds_the_assertions(tmp_path: Path, scenario: LoadedScen
     assert "assert:package" not in harness.events
 
 
+def test_report_write_failure_still_names_what_ended_the_run(
+    tmp_path: Path, scenario: LoadedScenario
+) -> None:
+    progress: list[tuple[str, str]] = []
+    harness = Harness(tmp_path, fail={"wait_ready": SshTransportError("unreachable")})
+    create = harness.create_workspace
+
+    def workspace_with_blocked_report() -> RunWorkspace:
+        workspace = create()
+        (workspace.path / "report.json").mkdir()
+        return workspace
+
+    harness.create_workspace = workspace_with_blocked_report  # type: ignore[method-assign]
+
+    result = RunCoordinator(
+        harness.dependencies(), progress=lambda phase, message: progress.append((phase, message))
+    ).run(scenario)
+
+    assert result.exit_code == ExitCode.REPORT
+    assert result.failure is not None
+    assert result.failure.context["run_failure"] == "ssh-unavailable: unreachable"
+    # The last progress line never claims an outcome the report could not record.
+    assert progress[-1] == ("report", "writing the report")
+
+
 def test_report_write_failure_is_exit_9_and_never_success(
     tmp_path: Path, scenario: LoadedScenario
 ) -> None:

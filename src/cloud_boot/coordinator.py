@@ -554,12 +554,20 @@ class RunCoordinator:
             warnings=state.warnings,
             failure=FailureRecord.from_error(failure) if failure is not None else None,
         )
-        self._progress("report", f"{outcome} (exit code {exit_code})")
+        self._progress("report", "writing the report")
         try:
             report_path = write_report(workspace, report)
         except ArtifactError as e:
-            # Never report success without persisted evidence.
-            return RunResult(e.exit_code, "error", workspace.path, None, e, tuple(state.assertions))
+            # Never report success without persisted evidence. The report can no longer say what
+            # ended the run, so the returned error carries it.
+            context = dict(e.context)
+            if failure is not None:
+                context["run_failure"] = f"{failure.code}: {failure.message}"
+            reported = ArtifactError(e.message, context=context)
+            return RunResult(
+                reported.exit_code, "error", workspace.path, None, reported, tuple(state.assertions)
+            )
+        self._progress("report", f"{outcome} (exit code {exit_code})")
         return RunResult(
             exit_code, outcome, workspace.path, report_path, failure, tuple(state.assertions)
         )

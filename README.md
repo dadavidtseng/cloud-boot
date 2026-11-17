@@ -63,6 +63,7 @@ INFO assertions: evaluating 3 assertions
 INFO collect: copying cloud-init logs
 INFO shutdown: asking the guest to power off
 INFO shutdown: stopping QEMU
+INFO report: writing the report
 INFO report: passed (exit code 0)
 ```
 
@@ -95,8 +96,9 @@ are mode 0700 and files 0600.
     `-- qemu.stderr.log          QEMU's own diagnostics
 ```
 
-Seed media, the qcow2 overlay, and the run's SSH key live in `transient/` during the run and are
-deleted afterwards, even when the run fails. Failed runs keep all the evidence above.
+Seed media, the qcow2 overlay, the run's SSH key, and its known-hosts file live in `transient/`
+during the run and are deleted afterwards, even when the run fails. Failed runs keep all the
+evidence above.
 
 Downloaded images are cached by SHA-256 under `$XDG_CACHE_HOME/cloud-boot`
 (by default `~/.cache/cloud-boot`).
@@ -117,7 +119,7 @@ The exit code always matches `exit_code` in `report.json` when a run directory w
 | 8 | The run exceeded the scenario's time limit |
 | 9 | The run's evidence or report could not be written |
 | 10 | Unexpected internal error |
-| 130 | Interrupted with Ctrl-C (cleanup and the report still run) |
+| 130 | Interrupted with Ctrl-C (once a run has started, cleanup and the report still run) |
 
 ## The basic scenario
 

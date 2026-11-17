@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import shutil
@@ -373,7 +374,7 @@ class RunCoordinator:
         identity = deps.create_identity(
             workspace.transient_dir, self._after(PREPARATION_TIMEOUT_SECONDS)
         )
-        cleanup.callback(identity.destroy)
+        cleanup.callback(self._quietly, state, "remove the run key", identity.destroy)
         seed = deps.build_seed(
             plan, identity.public_key, loaded.source_path.parent, workspace.transient_dir
         )
@@ -388,7 +389,7 @@ class RunCoordinator:
         boot_dir = boot_directory(1, plan.name)
         console = workspace.open_new(f"{boot_dir}/console.log")
         # Registered before the VM starts, so the console closes only after QEMU has stopped.
-        cleanup.callback(console.close)
+        cleanup.callback(self._quietly, state, "close the console log", console.close)
         run_deadline = deps.clock() + scenario.timeout_seconds
         self._progress("boot", f"starting QEMU ({scenario.timeout_seconds} s limit)")
         handle = deps.vm_backend.start(
@@ -401,7 +402,8 @@ class RunCoordinator:
             )
         )
         session: dict[str, GuestSession] = {}
-        cleanup.callback(self._stop_guest, handle, session, workspace, boot_dir, state)
+        stop_guest = functools.partial(self._stop_guest, handle, session, workspace, boot_dir, state)
+        cleanup.callback(self._quietly, state, "stop the guest", stop_guest)
         workspace.write_text_atomic(
             f"{boot_dir}/qemu-command.json", json.dumps(list(handle.argv), indent=2) + "\n"
         )
@@ -441,6 +443,18 @@ class RunCoordinator:
                 phase=ErrorPhase.ASSERTION,
                 context={"timeout_seconds": scenario.timeout_seconds},
             )
+
+    @staticmethod
+    def _quietly(state: _RunState, action: str, step: Callable[[], object]) -> None:
+        """Run one cleanup step; a failure becomes a warning, never the run's outcome.
+
+        KeyboardInterrupt still propagates: the run is then reported as interrupted, and the
+        remaining cleanups still run.
+        """
+        try:
+            step()
+        except Exception as e:
+            state.warnings.append(f"could not {action}: {e}")
 
     def _stop_guest(
         self,

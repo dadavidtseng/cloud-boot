@@ -383,6 +383,24 @@ def test_cloud_init_timeout_still_collects_diagnostics(
     assert harness.events[-5:] == SUCCESS_EVENTS[-5:]
 
 
+def test_cleanup_failure_never_replaces_the_outcome(
+    tmp_path: Path, scenario: LoadedScenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: AccessIdentity) -> None:
+        raise PermissionError(13, "Permission denied", str(self.private_key))
+
+    monkeypatch.setattr(AccessIdentity, "destroy", refuse)
+    harness = Harness(tmp_path, fail={"cloud-init": ProcessTimeoutError()})
+
+    result = harness.run(scenario)
+
+    assert result.exit_code == ExitCode.TIMEOUT
+    assert any(
+        warning.startswith("could not remove the run key: [Errno 13]")
+        for warning in harness.report()["warnings"]
+    )
+
+
 def test_interrupt_is_its_own_phase_not_an_internal_error(
     tmp_path: Path, scenario: LoadedScenario
 ) -> None:

@@ -2,7 +2,13 @@
 # cli.py
 # ----------------------------------------------------------------------------------------------------
 
-"""Command-line entry point. Milestone 0 offers only `cloud-boot run <scenario>`."""
+"""Command-line entry point. Milestone 0 offers only `cloud-boot run <scenario>`.
+
+stdout carries only the run directory's path, so scripts can capture it; everything else goes
+to stderr, one line each: `INFO <phase>: …` for progress, `FAIL`/`WARN <id> (<status>): …` for
+required and optional assertions that did not pass, then `ERROR <phase>: …` and `HINT …` for
+the failure that ended the run. The return value is the process exit code.
+"""
 
 # ----------------------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -44,6 +50,8 @@ type RunnerFactory = Callable[[Progress, Mapping[str, str]], Runner]
 
 # ----------------------------------------------------------------------------------------------------
 class _ParserExit(Exception):
+    """Raised by `_Parser` in place of `sys.exit`, carrying the exit status."""
+
     def __init__(self, status: int) -> None:
         super().__init__(status)
         self.status = status
@@ -99,6 +107,7 @@ def build_parser(*, stdout: TextIO, stderr: TextIO) -> argparse.ArgumentParser:
 
 # ----------------------------------------------------------------------------------------------------
 def _production_runner(progress: Progress, environ: Mapping[str, str]) -> Runner:
+    """Build the real coordinator, with directories taken from the XDG environment."""
     dependencies = production_dependencies(
         cache_dir=default_cache_dir(environ), artifact_root=default_artifact_root(environ)
     )
@@ -146,6 +155,7 @@ def _run(
     environ: Mapping[str, str],
     runner_factory: RunnerFactory,
 ) -> int:
+    """Load and run one scenario, write its summary to stderr, and return its exit code."""
     try:
         loaded = load_scenario(scenario)
     except ScenarioValidationError as e:
@@ -170,6 +180,7 @@ def _run(
 
 # ----------------------------------------------------------------------------------------------------
 def _write_failure(err: TextIO, failure: CloudBootError) -> None:
+    """Write the failure that ended the run, and its remediation if there is one."""
     err.write(f"ERROR {failure.phase}: {failure.message}\n")
     if failure.remediation:
         err.write(f"HINT {failure.remediation}\n")
